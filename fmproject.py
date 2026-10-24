@@ -11,7 +11,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-APP_TITLE = "Beldiev Electronics Lightweight FM"
+APP_TITLE = "LijiArts Ltd — Facility Management"
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "facility.db")
 
 
@@ -777,8 +777,8 @@ def main():
             unsafe_allow_html=True,
         )
     with hdr_col2:
-        st.markdown("## Facility Management")
-        st.caption(f"DB: `{db_path}`")
+        st.markdown("## LijiArts Ltd")
+        st.caption("Facility Management")
 
     # ----- Sidebar module selector -----
     tab_labels = [m["name"] for m in MODULES]
