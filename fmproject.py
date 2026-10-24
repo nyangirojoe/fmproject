@@ -68,7 +68,6 @@ class Database:
         self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
-        # WAL + busy timeout prevents "database is locked" under concurrent reruns.
         try:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA busy_timeout=30000")
@@ -488,8 +487,6 @@ def _num_or_none(raw: str):
 
 
 def render_form_inputs(module, defaults: dict | None = None, prefix: str = "") -> dict:
-    """Render visible fields in a 3-column grid. `prefix` disambiguates the
-    new vs edit forms, which would otherwise share widget keys."""
     defaults = defaults or {}
     visible = [f for f in module["fields"] if not f.get("hidden")]
     data: dict = {}
@@ -601,7 +598,6 @@ def render_module(module, db: Database):
     st.subheader(module["name"])
     st.caption(f"Table: `{module['table']}` — {db.count(module['table'])} record(s)")
 
-    # ---------- search ----------
     search = st.text_input(
         "🔍 Search (any column)",
         value=st.session_state.get(f"search_{module['table']}", ""),
@@ -609,7 +605,6 @@ def render_module(module, db: Database):
     )
     rows = db.fetch(module["table"], search.strip() or None)
 
-    # ---------- records table + selection ----------
     selected = _render_records_table(module, rows)
 
     st.divider()
@@ -621,7 +616,6 @@ def render_module(module, db: Database):
             submitted = st.form_submit_button("Save (Add)")
 
         if submitted:
-            # Double-submit guard
             token = f"saved_{module['table']}"
             if st.session_state.get(token):
                 st.info("A save is already in progress — please wait.")
@@ -848,4 +842,4 @@ def main():
 
     # ----- Sidebar module selector -----
     tab_labels = [m["name"] for m in MODULES]
-   
+    sv_idx = next(i for i, m in enumerate(M
