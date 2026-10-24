@@ -11,7 +11,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-APP_TITLE = "Facility Management — Lightweight FM"
+APP_TITLE = "Beldiev Electronics Lightweight FM"
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "facility.db")
 
 
