@@ -66,8 +66,14 @@ SQL_TYPE = {"text": "TEXT", "number": "REAL", "date": "TEXT", "choice": "TEXT"}
 class Database:
     def __init__(self, path: str):
         self.path = path
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
+        # WAL + busy timeout prevents "database is locked" under concurrent reruns.
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=30000")
+        except sqlite3.DatabaseError:
+            pass
 
     def create_schema(self, modules):
         for m in modules:
@@ -118,6 +124,10 @@ class Database:
 
     def delete(self, table, rid):
         self.conn.execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
+        self.conn.commit()
+
+    def delete_all(self, table):
+        self.conn.execute(f'DELETE FROM "{table}"')
         self.conn.commit()
 
     def count(self, table):
@@ -212,16 +222,17 @@ def _refresh_pbf_status(db, borrow_no):
 def pbf_pre_save(db, data, record_id):
     if not data.get("part_no"):
         return False, "Part No. is required."
-    if not data.get("qty") or data["qty"] <= 0:
+    qty = data.get("qty")
+    if qty is None or qty <= 0:
         return False, "Quantity must be greater than zero."
     if record_id is None:
         available = _stock_on_hand(db, data["part_no"])
-        if available < data["qty"]:
+        if available < qty:
             return False, (
                 f"Insufficient stock for part **{data['part_no']}**.\n\n"
                 f"- On hand: `{available:g}`\n"
-                f"- Requested: `{data['qty']:g}`\n\n"
-                "Add stock first via a GRN voucher in the **SV** tab."
+                f"- Requested: `{qty:g}`\n\n"
+                "Add stock first via a GRN voucher in the **SV** module."
             )
     return True, ""
 
@@ -271,7 +282,8 @@ def prf_pre_save(db, data, record_id):
     ).fetchone()
     if pbf is None:
         return False, f"No borrowing found with Borrow No. **{borrow_no}**."
-    if data.get("qty") is None or data["qty"] <= 0:
+    qty = data.get("qty")
+    if qty is None or qty <= 0:
         return False, "Return quantity must be greater than zero."
     sql = "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return WHERE borrow_no = ?"
     params = [borrow_no]
@@ -281,9 +293,9 @@ def prf_pre_save(db, data, record_id):
     returned = db.conn.execute(sql, params).fetchone()["s"] or 0.0
     borrowed = pbf["qty"] or 0.0
     outstanding = borrowed - returned
-    if data["qty"] > outstanding:
+    if qty > outstanding:
         return False, (
-            f"Return quantity ({data['qty']:g}) exceeds outstanding "
+            f"Return quantity ({qty:g}) exceeds outstanding "
             f"({outstanding:g}) for borrow **{borrow_no}**."
         )
     if pbf["part_no"] and not data.get("part_no"):
@@ -475,7 +487,9 @@ def _num_or_none(raw: str):
         raise ValueError(f"'{raw}' is not a valid number.")
 
 
-def render_form_inputs(module, defaults: dict | None = None) -> dict:
+def render_form_inputs(module, defaults: dict | None = None, prefix: str = "") -> dict:
+    """Render visible fields in a 3-column grid. `prefix` disambiguates the
+    new vs edit forms, which would otherwise share widget keys."""
     defaults = defaults or {}
     visible = [f for f in module["fields"] if not f.get("hidden")]
     data: dict = {}
@@ -483,7 +497,7 @@ def render_form_inputs(module, defaults: dict | None = None) -> dict:
     cols = st.columns(3)
     for i, f in enumerate(visible):
         with cols[i % 3]:
-            key = f"f_{module['table']}_{f['col']}"
+            key = f"{prefix}f_{module['table']}_{f['col']}"
             default = defaults.get(f["col"], "") or ""
             if f["kind"] == "number":
                 default_str = f"{default:g}" if isinstance(default, float) else str(default or "")
@@ -530,7 +544,10 @@ def validate_numbers(module, data) -> str | None:
         if f["kind"] != "number":
             continue
         key = f"f_{module['table']}_{f['col']}"
-        raw = str(st.session_state.get(key, "")).strip()
+        try:
+            raw = str(st.session_state.get(key, "")).strip()
+        except Exception:
+            continue
         if raw == "":
             continue
         try:
@@ -584,6 +601,7 @@ def render_module(module, db: Database):
     st.subheader(module["name"])
     st.caption(f"Table: `{module['table']}` — {db.count(module['table'])} record(s)")
 
+    # ---------- search ----------
     search = st.text_input(
         "🔍 Search (any column)",
         value=st.session_state.get(f"search_{module['table']}", ""),
@@ -591,43 +609,60 @@ def render_module(module, db: Database):
     )
     rows = db.fetch(module["table"], search.strip() or None)
 
+    # ---------- records table + selection ----------
     selected = _render_records_table(module, rows)
 
     st.divider()
 
+    # ---------- add new ----------
     with st.expander("➕ Add new record", expanded=selected is None):
         with st.form(key=f"new_{module['table']}", clear_on_submit=True):
-            new_data = render_form_inputs(module, defaults={})
+            new_data = render_form_inputs(module, defaults={}, prefix="new_")
             submitted = st.form_submit_button("Save (Add)")
 
         if submitted:
-            err = validate_dates(module, new_data) or validate_numbers(module, new_data)
-            if err:
-                st.error(err)
+            # Double-submit guard
+            token = f"saved_{module['table']}"
+            if st.session_state.get(token):
+                st.info("A save is already in progress — please wait.")
             else:
-                hook = module.get("auto")
-                if hook:
-                    new_data = hook(new_data)
-                pre = module.get("pre_save")
-                if pre:
-                    ok, msg = pre(db, new_data, None)
-                    if not ok:
-                        st.error(msg)
+                err = validate_dates(module, new_data) or validate_numbers(module, new_data)
+                if err:
+                    st.error(err)
+                else:
+                    st.session_state[token] = True
+                    try:
+                        hook = module.get("auto")
+                        if hook:
+                            new_data = hook(new_data)
+                        pre = module.get("pre_save")
+                        if pre:
+                            ok, msg = pre(db, new_data, None)
+                            if not ok:
+                                st.error(msg)
+                                st.session_state.pop(token, None)
+                                return
+                        rid = db.insert(module["table"], new_data)
+                        post = module.get("post_save")
+                        if post:
+                            post(db, rid, new_data, True)
+                        st.success(f"Record #{rid} added.")
+                    except Exception as exc:
+                        st.error(f"Save failed: {exc}")
+                        st.session_state.pop(token, None)
                         return
-                rid = db.insert(module["table"], new_data)
-                post = module.get("post_save")
-                if post:
-                    post(db, rid, new_data, True)
-                st.success(f"Record #{rid} added.")
-                st.rerun()
+                    finally:
+                        st.session_state.pop(token, None)
+                    st.rerun()
 
+    # ---------- edit / delete single ----------
     if selected is not None:
         st.markdown(f"### Editing record `#{selected['id']}`")
         defaults = _row_defaults(module, selected)
 
         with st.form(key=f"edit_{module['table']}_{selected['id']}"):
-            edited = render_form_inputs(module, defaults=defaults)
-            col1, col2, col3 = st.columns([1, 1, 4])
+            edited = render_form_inputs(module, defaults=defaults, prefix=f"edit_{selected['id']}_")
+            col1, col2, _ = st.columns([1, 1, 4])
             with col1:
                 save_btn = st.form_submit_button("💾 Update")
             with col2:
@@ -638,21 +673,24 @@ def render_module(module, db: Database):
             if err:
                 st.error(err)
             else:
-                hook = module.get("auto")
-                if hook:
-                    edited = hook(edited)
-                pre = module.get("pre_save")
-                if pre:
-                    ok, msg = pre(db, edited, selected["id"])
-                    if not ok:
-                        st.error(msg)
-                        return
-                db.update(module["table"], selected["id"], edited)
-                post = module.get("post_save")
-                if post:
-                    post(db, selected["id"], edited, False)
-                st.success(f"Record #{selected['id']} updated.")
-                st.rerun()
+                try:
+                    hook = module.get("auto")
+                    if hook:
+                        edited = hook(edited)
+                    pre = module.get("pre_save")
+                    if pre:
+                        ok, msg = pre(db, edited, selected["id"])
+                        if not ok:
+                            st.error(msg)
+                            return
+                    db.update(module["table"], selected["id"], edited)
+                    post = module.get("post_save")
+                    if post:
+                        post(db, selected["id"], edited, False)
+                    st.success(f"Record #{selected['id']} updated.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Update failed: {exc}")
 
         if del_btn:
             pre = module.get("pre_delete")
@@ -661,20 +699,48 @@ def render_module(module, db: Database):
                 if not ok:
                     st.error(msg)
                     return
-            if st.session_state.get(f"confirm_del_{module['table']}_{selected['id']}"):
-                db.delete(module["table"], selected["id"])
-                post = module.get("post_delete")
-                if post:
-                    post(db, selected["id"], selected)
-                st.session_state.pop(f"confirm_del_{module['table']}_{selected['id']}", None)
-                st.success(f"Record #{selected['id']} deleted.")
-                st.rerun()
+            confirm_key = f"confirm_del_{module['table']}_{selected['id']}"
+            if st.session_state.get(confirm_key):
+                try:
+                    db.delete(module["table"], selected["id"])
+                    post = module.get("post_delete")
+                    if post:
+                        post(db, selected["id"], selected)
+                    st.session_state.pop(confirm_key, None)
+                    st.success(f"Record #{selected['id']} deleted.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Delete failed: {exc}")
             else:
-                st.session_state[f"confirm_del_{module['table']}_{selected['id']}"] = True
+                st.session_state[confirm_key] = True
                 st.warning(
                     f"⚠️ Click **Delete** again to confirm removal of record "
                     f"`#{selected['id']}`."
                 )
+
+    # ---------- bulk delete ----------
+    st.divider()
+    with st.expander("🧨 Danger zone — bulk delete"):
+        total = db.count(module["table"])
+        st.write(
+            f"This deletes **all {total} record(s)** in `{module['table']}`. "
+            "This cannot be undone."
+        )
+        confirm_bulk = st.checkbox(
+            f"I understand this will wipe all {total} records in this module",
+            key=f"bulk_ack_{module['table']}",
+        )
+        if st.button(
+            f"Delete all records in {module['name']}",
+            disabled=not confirm_bulk or total == 0,
+            key=f"bulk_del_{module['table']}",
+        ):
+            try:
+                db.delete_all(module["table"])
+                st.success(f"All records deleted from {module['name']}.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Bulk delete failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -782,24 +848,4 @@ def main():
 
     # ----- Sidebar module selector -----
     tab_labels = [m["name"] for m in MODULES]
-    sv_idx = next(i for i, m in enumerate(MODULES) if m["table"] == "sv_stock_voucher")
-    tab_labels.insert(sv_idx + 1, "Stock Balance")
-
-    with st.sidebar:
-        st.header("Modules")
-        selected_tab = st.radio(
-            "Select module",
-            tab_labels,
-            label_visibility="collapsed",
-        )
-
-    # ----- Render the selected module only -----
-    if selected_tab == "Stock Balance":
-        render_stock_balance(db)
-    else:
-        module = next(m for m in MODULES if m["name"] == selected_tab)
-        render_module(module, db)
-
-
-if __name__ == "__main__":
-    main()
+   
