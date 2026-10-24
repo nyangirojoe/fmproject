@@ -842,4 +842,23 @@ def main():
 
     # ----- Sidebar module selector -----
     tab_labels = [m["name"] for m in MODULES]
-    sv_idx = next(i for i, m in enumerate(M
+    sv_idx = next(i for i, m in enumerate(MODULES) if m["table"] == "sv_stock_voucher")
+    tab_labels.insert(sv_idx + 1, "Stock Balance")
+
+    with st.sidebar:
+        st.header("Modules")
+        selected_tab = st.radio(
+            "Select module",
+            tab_labels,
+            label_visibility="collapsed",
+        )
+
+    if selected_tab == "Stock Balance":
+        render_stock_balance(db)
+    else:
+        module = next(m for m in MODULES if m["name"] == selected_tab)
+        render_module(module, db)
+
+
+if __name__ == "__main__":
+    main()
