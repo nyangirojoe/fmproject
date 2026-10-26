@@ -7,9 +7,10 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
+import sqlite3
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text
+import libsql_experimental as libsql
 
 APP_TITLE = "LijiArts Ltd — Facility Management"
 
@@ -77,48 +78,59 @@ def _turso_credentials():
 
 
 class Database:
-    """Turso-backed database. Same method names as the old sqlite3 version."""
+    """Turso-backed database using libsql-experimental. Same method names
+    as the old sqlite3 version so the rest of the app works unchanged."""
 
     def __init__(self):
         url, token = _turso_credentials()
-        host = url.replace("libsql://", "").replace("https://", "")
-        db_url = f"sqlite+libsql://{host}?authToken={token}&secure=true"
-        self.engine = create_engine(
-            db_url,
-            connect_args={"check_same_thread": False},
-            pool_pre_ping=True,
-        )
-        self.conn = _EngineConn(self.engine)
+        self.conn = libsql.connect(url, auth_token=token)
+        try:
+            self.conn.row_factory = sqlite3.Row
+        except Exception:
+            pass  # libsql may not expose Row; we convert explicitly below
+
+    def _execute(self, sql, params=None):
+        if params is None:
+            return self.conn.execute(sql)
+        return self.conn.execute(sql, params)
+
+    def execute(self, sql, params=None):
+        """Public wrapper so Chunks 2 & 3 keep working."""
+        return self._execute(sql, params)
+
+    def _row_to_dict(self, row):
+        if row is None:
+            return None
+        try:
+            return dict(row)
+        except (TypeError, ValueError):
+            return row  # already a dict
 
     def create_schema(self, modules):
-        with self.engine.begin() as conn:
-            for m in modules:
-                cols = ", ".join(
-                    f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"]
-                )
-                conn.execute(text(
-                    f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
-                    f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
-                ))
-                existing = {
-                    row[1]
-                    for row in conn.execute(text(
-                        f'PRAGMA table_info("{m["table"]}")'
-                    )).fetchall()
-                }
-                for f in m["fields"]:
-                    if f["col"] not in existing:
-                        conn.execute(text(
-                            f'ALTER TABLE "{m["table"]}" ADD COLUMN '
-                            f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
-                        ))
+        for m in modules:
+            cols = ", ".join(f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"])
+            self._execute(
+                f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
+                f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
+            )
+            info = self._execute(f'PRAGMA table_info("{m["table"]}")').fetchall()
+            existing = set()
+            for r in info:
+                try:
+                    existing.add(r["name"])
+                except (TypeError, IndexError):
+                    existing.add(r[1])
+            for f in m["fields"]:
+                if f["col"] not in existing:
+                    self._execute(
+                        f'ALTER TABLE "{m["table"]}" ADD COLUMN '
+                        f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
+                    )
+        self.conn.commit()
 
     def fetch(self, table, search=None):
-        with self.engine.connect() as conn:
-            result = conn.execute(text(
-                f'SELECT * FROM "{table}" ORDER BY id DESC'
-            ))
-            rows = [dict(r._mapping) for r in result.fetchall()]
+        rows = self._execute(f'SELECT * FROM "{table}" ORDER BY id DESC').fetchall()
+        rows = [self._row_to_dict(r) for r in rows]
         if search:
             s = search.lower()
             rows = [
@@ -129,87 +141,38 @@ class Database:
 
     def insert(self, table, data):
         cols = ", ".join(f'"{k}"' for k in data)
-        marks = ", ".join(f":{k}" for k in data)
-        with self.engine.begin() as conn:
-            result = conn.execute(
-                text(f'INSERT INTO "{table}" ({cols}) VALUES ({marks})'),
-                data,
-            )
-            rid = result.lastrowid
-            if rid is None:
-                rid = conn.execute(
-                    text("SELECT last_insert_rowid() AS rid")
-                ).scalar()
-        return rid
+        marks = ", ".join("?" for _ in data)
+        cur = self._execute(
+            f'INSERT INTO "{table}" ({cols}) VALUES ({marks})',
+            list(data.values()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
 
     def update(self, table, rid, data):
-        sets = ", ".join(f'"{k}" = :{k}' for k in data)
-        payload = dict(data)
-        payload["_rid"] = rid
-        with self.engine.begin() as conn:
-            conn.execute(
-                text(f'UPDATE "{table}" SET {sets} WHERE id = :_rid'),
-                payload,
-            )
+        sets = ", ".join(f'"{k}" = ?' for k in data)
+        self._execute(
+            f'UPDATE "{table}" SET {sets} WHERE id = ?',
+            list(data.values()) + [rid],
+        )
+        self.conn.commit()
 
     def delete(self, table, rid):
-        with self.engine.begin() as conn:
-            conn.execute(
-                text(f'DELETE FROM "{table}" WHERE id = :_rid'),
-                {"_rid": rid},
-            )
+        self._execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
+        self.conn.commit()
 
     def delete_all(self, table):
-        with self.engine.begin() as conn:
-            conn.execute(text(f'DELETE FROM "{table}"'))
+        self._execute(f'DELETE FROM "{table}"')
+        self.conn.commit()
 
     def count(self, table):
-        with self.engine.connect() as conn:
-            return conn.execute(
-                text(f'SELECT COUNT(*) FROM "{table}"')
-            ).scalar()
-
-    def execute(self, sql: str, params=None):
-        params = params or {}
-        with self.engine.begin() as conn:
-            result = conn.execute(text(sql), params)
-            return _Result(result)
-
-
-class _Result:
-    def __init__(self, result):
-        self._rows = result.fetchall() if result.returns_rows else []
-        self._lastrowid = getattr(result, "lastrowid", None)
-
-    def fetchall(self):
-        return [dict(r._mapping) for r in self._rows]
-
-    def fetchone(self):
-        return dict(self._rows[0]._mapping) if self._rows else None
-
-    def scalar(self):
-        if not self._rows:
-            return None
-        return list(self._rows[0]._mapping.values())[0]
-
-    @property
-    def lastrowid(self):
-        return self._lastrowid
-
-
-class _EngineConn:
-    def __init__(self, engine):
-        self._engine = engine
-
-    def execute(self, sql, params=None):
-        params = params or {}
-        with self._engine.begin() as conn:
-            result = conn.execute(text(sql), params)
-            return _Result(result)
-
-    def commit(self):
-        pass
-
+        row = self._execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
+        if row is None:
+            return 0
+        try:
+            return row[0]
+        except (TypeError, KeyError):
+            return list(row.values())[0]
 
 # ---------------------------------------------------------------------------
 # Stock ledger helpers + PBF / PRF interlink hooks
