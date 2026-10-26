@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import os
-import sqlite3
+from sqlalchemy import create_engine, text
 from datetime import datetime
 
 import pandas as pd
@@ -58,44 +58,75 @@ def auto_sv(data):
 
 
 # ---------------------------------------------------------------------------
-# Database
+# Database (Turso / libsql via SQLAlchemy)
 # ---------------------------------------------------------------------------
 SQL_TYPE = {"text": "TEXT", "number": "REAL", "date": "TEXT", "choice": "TEXT"}
 
 
+def _turso_credentials():
+    """Read Turso URL + token from Streamlit secrets, with clear errors."""
+    try:
+        url = st.secrets["turso"]["url"]
+        token = st.secrets["turso"]["token"]
+    except (KeyError, FileNotFoundError):
+        st.error(
+            "**Turso credentials missing.** Add this to your Streamlit app's "
+            "Secrets (Settings → Secrets):\n\n"
+            "```toml\n[turso]\nurl = \"libsql://...\"\ntoken = \"...\"\n```"
+        )
+        st.stop()
+    return url, token
+
+
 class Database:
-    def __init__(self, path: str):
-        self.path = path
-        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
-        self.conn.row_factory = sqlite3.Row
-        try:
-            self.conn.execute("PRAGMA journal_mode=WAL")
-            self.conn.execute("PRAGMA busy_timeout=30000")
-        except sqlite3.DatabaseError:
-            pass
+    """Turso-backed database. Same method names as the old sqlite3 version,
+    so the rest of the app works unchanged."""
+
+    def __init__(self):
+        url, token = _turso_credentials()
+        # sqlalchemy-libsql uses the form: sqlite+libsql://host?authToken=...
+        # The plain `libsql://` scheme also works, but the explicit
+        # `sqlite+libsql://` form is what the dialect recognises.
+        host = url.replace("libsql://", "")
+        db_url = f"sqlite+libsql://{host}?authToken={token}&secure=true"
+        self.engine = create_engine(
+            db_url,
+            connect_args={"check_same_thread": False},
+            pool_pre_ping=True,
+        )
+        # Local session alias so the rest of the app doesn't have to change.
+        self.conn = _EngineConn(self.engine)
 
     def create_schema(self, modules):
-        for m in modules:
-            cols = ", ".join(f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"])
-            self.conn.execute(
-                f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
-                f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
-            )
-            existing = {
-                r["name"]
-                for r in self.conn.execute(f'PRAGMA table_info("{m["table"]}")').fetchall()
-            }
-            for f in m["fields"]:
-                if f["col"] not in existing:
-                    self.conn.execute(
-                        f'ALTER TABLE "{m["table"]}" ADD COLUMN '
-                        f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
-                    )
-        self.conn.commit()
+        with self.engine.begin() as conn:
+            for m in modules:
+                cols = ", ".join(
+                    f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"]
+                )
+                conn.execute(text(
+                    f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
+                    f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
+                ))
+                # Migration: add missing columns on older DBs.
+                existing = {
+                    row[1]  # PRAGMA table_info: column name is index 1
+                    for row in conn.execute(text(
+                        f'PRAGMA table_info("{m["table"]}")'
+                    )).fetchall()
+                }
+                for f in m["fields"]:
+                    if f["col"] not in existing:
+                        conn.execute(text(
+                            f'ALTER TABLE "{m["table"]}" ADD COLUMN '
+                            f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
+                        ))
 
     def fetch(self, table, search=None):
-        rows = self.conn.execute(f'SELECT * FROM "{table}" ORDER BY id DESC').fetchall()
-        rows = [dict(r) for r in rows]
+        with self.engine.connect() as conn:
+            result = conn.execute(text(
+                f'SELECT * FROM "{table}" ORDER BY id DESC'
+            ))
+            rows = [dict(r._mapping) for r in result.fetchall()]
         if search:
             s = search.lower()
             rows = [
@@ -106,32 +137,90 @@ class Database:
 
     def insert(self, table, data):
         cols = ", ".join(f'"{k}"' for k in data)
-        marks = ", ".join("?" for _ in data)
-        cur = self.conn.execute(
-            f'INSERT INTO "{table}" ({cols}) VALUES ({marks})', list(data.values())
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        marks = ", ".join(f":{k}" for k in data)  # named params
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                text(f'INSERT INTO "{table}" ({cols}) VALUES ({marks})'),
+                data,
+            )
+            rid = result.lastrowid
+        return rid
 
     def update(self, table, rid, data):
-        sets = ", ".join(f'"{k}" = ?' for k in data)
-        self.conn.execute(
-            f'UPDATE "{table}" SET {sets} WHERE id = ?',
-            list(data.values()) + [rid],
-        )
-        self.conn.commit()
+        sets = ", ".join(f'"{k}" = :{k}' for k in data)
+        payload = dict(data)
+        payload["_rid"] = rid
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(f'UPDATE "{table}" SET {sets} WHERE id = :_rid'),
+                payload,
+            )
 
     def delete(self, table, rid):
-        self.conn.execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
-        self.conn.commit()
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(f'DELETE FROM "{table}" WHERE id = :_rid'),
+                {"_rid": rid},
+            )
 
     def delete_all(self, table):
-        self.conn.execute(f'DELETE FROM "{table}"')
-        self.conn.commit()
+        with self.engine.begin() as conn:
+            conn.execute(text(f'DELETE FROM "{table}"'))
 
     def count(self, table):
-        return self.conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        with self.engine.connect() as conn:
+            return conn.execute(
+                text(f'SELECT COUNT(*) FROM "{table}"')
+            ).scalar()
 
+    def execute(self, sql: str, params=None):
+        """Raw SQL helper for the .execute() call sites in the hooks.
+        Returns a _Result wrapper with .fetchall() / .fetchone() / .scalar()
+        so existing code keeps working."""
+        params = params or {}
+        with self.engine.begin() as conn:
+            result = conn.execute(text(sql), params)
+            return _Result(result)
+
+
+class _Result:
+    """Thin wrapper to mimic sqlite3.Cursor's read API."""
+
+    def __init__(self, result):
+        self._rows = result.fetchall() if result.returns_rows else []
+        self._lastrowid = getattr(result, "lastrowid", None)
+
+    def fetchall(self):
+        return [dict(r._mapping) for r in self._rows]
+
+    def fetchone(self):
+        return dict(self._rows[0]._mapping) if self._rows else None
+
+    def scalar(self):
+        if not self._rows:
+            return None
+        return list(self._rows[0]._mapping.values())[0]
+
+    @property
+    def lastrowid(self):
+        return self._lastrowid
+
+
+class _EngineConn:
+    """Adapter so the old `db.conn.execute(...)` calls still work.
+    Delegates to db.execute()."""
+    def __init__(self, engine):
+        self._engine = engine
+
+    def execute(self, sql, params=None):
+        params = params or {}
+        with self._engine.begin() as conn:
+            result = conn.execute(text(sql), params)
+            return _Result(result)
+
+    def commit(self):
+        # SQLAlchemy begin() blocks commit automatically.
+        pass
 
 # ---------------------------------------------------------------------------
 # Stock ledger helpers + PBF / PRF interlink hooks
@@ -139,9 +228,9 @@ class Database:
 def _stock_on_hand(db, part_no):
     if not part_no:
         return 0.0
-    rows = db.conn.execute(
-        "SELECT voucher_type, qty FROM sv_stock_voucher WHERE part_no = ?",
-        (part_no,),
+    rows = db.execute(
+        "SELECT voucher_type, qty FROM sv_stock_voucher WHERE part_no = :part_no",
+        {"part_no": part_no},
     ).fetchall()
     bal = 0.0
     for r in rows:
@@ -157,7 +246,7 @@ def _stock_on_hand(db, part_no):
 
 
 def _next_sv_no(db):
-    row = db.conn.execute(
+    row = db.execute(
         "SELECT COALESCE(MAX(id), 0) + 1 AS n FROM sv_stock_voucher"
     ).fetchone()
     return f"SV-{int(row['n']):05d}"
@@ -185,38 +274,37 @@ def _create_auto_sv(db, *, vtype, when, part_no, description, qty, uom,
 
 
 def _delete_auto_sv(db, ref_table, ref_id):
-    db.conn.execute(
-        "DELETE FROM sv_stock_voucher WHERE ref_table = ? AND ref_id = ?",
-        (ref_table, ref_id),
+    db.execute(
+        "DELETE FROM sv_stock_voucher WHERE ref_table = :rt AND ref_id = :rid",
+        {"rt": ref_table, "rid": ref_id},
     )
-    db.conn.commit()
 
 
 def _refresh_pbf_status(db, borrow_no):
     if not borrow_no:
         return
-    pbf = db.conn.execute(
-        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = ?", (borrow_no,)
+    pbf = db.execute(
+        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = :bn",
+        {"bn": borrow_no},
     ).fetchone()
     if pbf is None:
         return
     borrowed = pbf["qty"] or 0.0
-    returned = db.conn.execute(
-        "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return WHERE borrow_no = ?",
-        (borrow_no,),
-    ).fetchone()["s"] or 0.0
+    row = db.execute(
+        "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return WHERE borrow_no = :bn",
+        {"bn": borrow_no},
+    ).fetchone()
+    returned = (row["s"] if row else 0) or 0.0
     if returned <= 0:
         status = "Open"
     elif returned < borrowed:
         status = "Partially Returned"
     else:
         status = "Returned"
-    db.conn.execute(
-        "UPDATE pbf_part_borrowing SET status = ? WHERE id = ?",
-        (status, pbf["id"]),
+    db.execute(
+        "UPDATE pbf_part_borrowing SET status = :st WHERE id = :rid",
+        {"st": status, "rid": pbf["id"]},
     )
-    db.conn.commit()
-
 
 def pbf_pre_save(db, data, record_id):
     if not data.get("part_no"):
@@ -234,7 +322,6 @@ def pbf_pre_save(db, data, record_id):
                 "Add stock first via a GRN voucher in the **SV** module."
             )
     return True, ""
-
 
 def pbf_post_save(db, record_id, data, is_new):
     if not is_new:
@@ -261,35 +348,46 @@ def pbf_post_delete(db, record_id, data):
     _delete_auto_sv(db, "pbf_part_borrowing", record_id)
     borrow_no = data.get("borrow_no")
     if borrow_no:
-        prfs = db.conn.execute(
-            "SELECT id FROM prf_part_return WHERE borrow_no = ?", (borrow_no,)
+        prfs = db.execute(
+            "SELECT id FROM prf_part_return WHERE borrow_no = :bn",
+            {"bn": borrow_no},
         ).fetchall()
         for r in prfs:
             _delete_auto_sv(db, "prf_part_return", r["id"])
-        db.conn.execute(
-            "DELETE FROM prf_part_return WHERE borrow_no = ?", (borrow_no,)
+        db.execute(
+            "DELETE FROM prf_part_return WHERE borrow_no = :bn",
+            {"bn": borrow_no},
         )
-        db.conn.commit()
 
 
 def prf_pre_save(db, data, record_id):
     borrow_no = (data.get("borrow_no") or "").strip()
     if not borrow_no:
         return False, "Ref. Borrow No. is required to link a return to a borrowing."
-    pbf = db.conn.execute(
-        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = ?", (borrow_no,)
+    pbf = db.execute(
+        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = :bn",
+        {"bn": borrow_no},
     ).fetchone()
     if pbf is None:
         return False, f"No borrowing found with Borrow No. **{borrow_no}**."
     qty = data.get("qty")
     if qty is None or qty <= 0:
         return False, "Return quantity must be greater than zero."
-    sql = "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return WHERE borrow_no = ?"
-    params = [borrow_no]
+
     if record_id is not None:
-        sql += " AND id != ?"
-        params.append(record_id)
-    returned = db.conn.execute(sql, params).fetchone()["s"] or 0.0
+        row = db.execute(
+            "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return "
+            "WHERE borrow_no = :bn AND id != :rid",
+            {"bn": borrow_no, "rid": record_id},
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return "
+            "WHERE borrow_no = :bn",
+            {"bn": borrow_no},
+        ).fetchone()
+    returned = (row["s"] if row else 0) or 0.0
+
     borrowed = pbf["qty"] or 0.0
     outstanding = borrowed - returned
     if qty > outstanding:
@@ -302,6 +400,7 @@ def prf_pre_save(db, data, record_id):
     if pbf["description"] and not data.get("description"):
         data["description"] = pbf["description"]
     return True, ""
+
 
 
 def prf_post_save(db, record_id, data, is_new):
@@ -467,11 +566,10 @@ MODULES = [
 # Session DB singleton
 # ---------------------------------------------------------------------------
 @st.cache_resource
-def get_db(path: str) -> Database:
-    db = Database(path)
+def get_db() -> Database:
+    db = Database()
     db.create_schema(MODULES)
     return db
-
 
 # ---------------------------------------------------------------------------
 # Form field rendering
@@ -744,7 +842,7 @@ def render_stock_balance(db: Database):
     st.subheader("Stock Balance")
     st.caption("Aggregated live from all **Stock Voucher** movements.")
 
-    rows = db.conn.execute(
+    rows = db.execute(
         "SELECT part_no, description, uom, voucher_type, qty "
         "FROM sv_stock_voucher "
         "WHERE part_no IS NOT NULL AND TRIM(part_no) != ''"
@@ -816,8 +914,7 @@ def render_stock_balance(db: Database):
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
 
-    db_path = os.environ.get("FM_DB", DEFAULT_DB)
-    db = get_db(db_path)
+    db = get_db()
 
     # ----- Header -----
     hdr_col1, hdr_col2 = st.columns([1, 6])
