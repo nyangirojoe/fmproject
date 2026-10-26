@@ -63,6 +63,10 @@ def auto_sv(data):
 SQL_TYPE = {"text": "TEXT", "number": "REAL", "date": "TEXT", "choice": "TEXT"}
 
 
+from turso_python.connection import TursoConnection
+from turso_python.crud import TursoCRUD
+
+
 def _turso_credentials():
     try:
         url = st.secrets["turso"]["url"]
@@ -78,102 +82,95 @@ def _turso_credentials():
 
 
 class Database:
-    """Turso-backed database using libsql-experimental. Same method names
-    as the old sqlite3 version so the rest of the app works unchanged."""
+    """Turso-backed database using turso-python (pure Python, no compilation)."""
 
     def __init__(self):
         url, token = _turso_credentials()
-        self.conn = libsql.connect(url, auth_token=token)
-        try:
-            self.conn.row_factory = sqlite3.Row
-        except Exception:
-            pass  # libsql may not expose Row; we convert explicitly below
+        self.connection = TursoConnection(
+            database_url=url,
+            auth_token=token,
+        )
+        self.crud = TursoCRUD(self.connection)
 
-    def _execute(self, sql, params=None):
-        if params is None:
-            return self.conn.execute(sql)
-        return self.conn.execute(sql, params)
-
-    def execute(self, sql, params=None):
-        """Public wrapper so Chunks 2 & 3 keep working."""
-        return self._execute(sql, params)
-
-    def _row_to_dict(self, row):
-        if row is None:
-            return None
-        try:
-            return dict(row)
-        except (TypeError, ValueError):
-            return row  # already a dict
+    def _execute_raw(self, sql, params=None):
+        """Direct SQL execution through the underlying HTTP client."""
+        return self.connection.execute(sql, params or [])
 
     def create_schema(self, modules):
         for m in modules:
             cols = ", ".join(f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"])
-            self._execute(
+            self._execute_raw(
                 f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
                 f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
             )
-            info = self._execute(f'PRAGMA table_info("{m["table"]}")').fetchall()
-            existing = set()
-            for r in info:
-                try:
-                    existing.add(r["name"])
-                except (TypeError, IndexError):
-                    existing.add(r[1])
+            # Migration: add missing columns
+            info = self._execute_raw(f'PRAGMA table_info("{m["table"]}")')
+            rows = info.get("rows", []) if isinstance(info, dict) else []
+            existing = {r[1] for r in rows if len(r) > 1}
             for f in m["fields"]:
                 if f["col"] not in existing:
-                    self._execute(
+                    self._execute_raw(
                         f'ALTER TABLE "{m["table"]}" ADD COLUMN '
                         f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
                     )
-        self.conn.commit()
 
     def fetch(self, table, search=None):
-        rows = self._execute(f'SELECT * FROM "{table}" ORDER BY id DESC').fetchall()
-        rows = [self._row_to_dict(r) for r in rows]
+        result = self._execute_raw(f'SELECT * FROM "{table}" ORDER BY id DESC')
+        rows = result.get("rows", []) if isinstance(result, dict) else []
+        cols = result.get("cols", []) if isinstance(result, dict) else []
+        records = [dict(zip(cols, r)) for r in rows]
         if search:
             s = search.lower()
-            rows = [
-                r for r in rows
+            records = [
+                r for r in records
                 if any(s in str(v).lower() for v in r.values() if v is not None)
             ]
-        return rows
+        return records
 
     def insert(self, table, data):
-        cols = ", ".join(f'"{k}"' for k in data)
-        marks = ", ".join("?" for _ in data)
-        cur = self._execute(
-            f'INSERT INTO "{table}" ({cols}) VALUES ({marks})',
-            list(data.values()),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        self.crud.create(table, data)
+        # Fetch last inserted row ID
+        result = self._execute_raw(f'SELECT MAX(id) AS rid FROM "{table}"')
+        rows = result.get("rows", []) if isinstance(result, dict) else []
+        return rows[0][0] if rows else None
 
     def update(self, table, rid, data):
-        sets = ", ".join(f'"{k}" = ?' for k in data)
-        self._execute(
-            f'UPDATE "{table}" SET {sets} WHERE id = ?',
-            list(data.values()) + [rid],
-        )
-        self.conn.commit()
+        self.crud.update(table, data, where="id = ?", args=[rid])
 
     def delete(self, table, rid):
-        self._execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
-        self.conn.commit()
+        self.crud.delete(table, where="id = ?", args=[rid])
 
     def delete_all(self, table):
-        self._execute(f'DELETE FROM "{table}"')
-        self.conn.commit()
+        self._execute_raw(f'DELETE FROM "{table}"')
 
     def count(self, table):
-        row = self._execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
-        if row is None:
-            return 0
-        try:
-            return row[0]
-        except (TypeError, KeyError):
-            return list(row.values())[0]
+        result = self._execute_raw(f'SELECT COUNT(*) AS c FROM "{table}"')
+        rows = result.get("rows", []) if isinstance(result, dict) else []
+        return rows[0][0] if rows else 0
 
+    def execute(self, sql, params=None):
+        """For the hooks from Chunks 2/3. Returns a wrapper with fetchall/fetchone."""
+        result = self._execute_raw(sql, params or [])
+        return _TursoResult(result)
+
+
+class _TursoResult:
+    def __init__(self, result):
+        if isinstance(result, dict):
+            self._rows = [dict(zip(result.get("cols", []), r)) for r in result.get("rows", [])]
+        else:
+            self._rows = []
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def scalar(self):
+        if not self._rows:
+            return None
+        return list(self._rows[0].values())[0]
 # ---------------------------------------------------------------------------
 # Stock ledger helpers + PBF / PRF interlink hooks
 # ---------------------------------------------------------------------------
