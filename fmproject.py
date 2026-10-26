@@ -10,7 +10,7 @@ from datetime import datetime
 import sqlite3
 import pandas as pd
 import streamlit as st
-import libsql_experimental as libsql
+import turso_serverless
 
 APP_TITLE = "LijiArts Ltd — Facility Management"
 
@@ -62,9 +62,7 @@ def auto_sv(data):
 # ---------------------------------------------------------------------------
 SQL_TYPE = {"text": "TEXT", "number": "REAL", "date": "TEXT", "choice": "TEXT"}
 
-
-from turso_python.connection import TursoConnection
-from turso_python.crud import TursoCRUD
+from turso_serverless import connect
 
 
 def _turso_credentials():
@@ -82,43 +80,33 @@ def _turso_credentials():
 
 
 class Database:
-    """Turso-backed database using turso-python (pure Python, no compilation)."""
-
     def __init__(self):
         url, token = _turso_credentials()
-        self.connection = TursoConnection(database_url=url, auth_token=token)
-        self.crud = TursoCRUD(self.connection)
+        # turso_serverless needs https:// instead of libsql://
+        if url.startswith("libsql://"):
+            url = "https://" + url[len("libsql://"):]
+        self.conn = connect(url, auth_token=token)
 
-    def _execute_raw(self, sql, params=None):
-        return self.connection.execute(sql, params or [])
-
-    def _extract_rows(self, result):
-        """Handle both dict-style and list-style responses."""
-        if isinstance(result, dict):
-            cols = result.get("cols", [])
-            rows = result.get("rows", [])
-            return [dict(zip(cols, r)) for r in rows]
-        if isinstance(result, list):
-            out = []
-            for r in result:
-                if isinstance(r, dict):
-                    out.append(r)
-                elif isinstance(r, (list, tuple)):
-                    out.append({"value": r[0] if r else None})
-            return out
-        return []
+    def _row_to_dict(self, row, cols):
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row
+        return dict(zip(cols, row))
 
     def create_schema(self, modules):
         for m in modules:
             cols = ", ".join(f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"])
-            self._execute_raw(
+            self.conn.execute(
                 f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
                 f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
             )
 
     def fetch(self, table, search=None):
-        result = self._execute_raw(f'SELECT * FROM "{table}" ORDER BY id DESC')
-        records = self._extract_rows(result)
+        cur = self.conn.execute(f'SELECT * FROM "{table}" ORDER BY id DESC')
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else []
+        records = [self._row_to_dict(r, cols) for r in rows]
         if search:
             s = search.lower()
             records = [
@@ -130,53 +118,57 @@ class Database:
     def insert(self, table, data):
         cols = ", ".join(f'"{k}"' for k in data)
         marks = ", ".join("?" for _ in data)
-        self._execute_raw(
+        self.conn.execute(
             f'INSERT INTO "{table}" ({cols}) VALUES ({marks})',
             list(data.values()),
         )
-        result = self._execute_raw(f'SELECT MAX(id) AS rid FROM "{table}"')
-        rows = self._extract_rows(result)
-        return rows[0].get("rid") if rows else None
+        cur = self.conn.execute(f'SELECT MAX(id) AS rid FROM "{table}"')
+        row = cur.fetchone()
+        return row[0] if row else None
 
     def update(self, table, rid, data):
         sets = ", ".join(f'"{k}" = ?' for k in data)
-        self._execute_raw(
+        self.conn.execute(
             f'UPDATE "{table}" SET {sets} WHERE id = ?',
             list(data.values()) + [rid],
         )
 
     def delete(self, table, rid):
-        self._execute_raw(f'DELETE FROM "{table}" WHERE id = ?', [rid])
+        self.conn.execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
 
     def delete_all(self, table):
-        self._execute_raw(f'DELETE FROM "{table}"')
+        self.conn.execute(f'DELETE FROM "{table}"')
 
     def count(self, table):
-        result = self._execute_raw(f'SELECT COUNT(*) AS c FROM "{table}"')
-        rows = self._extract_rows(result)
-        if not rows:
-            return 0
-        return list(rows[0].values())[0]
+        cur = self.conn.execute(f'SELECT COUNT(*) AS c FROM "{table}"')
+        row = cur.fetchone()
+        return row[0] if row else 0
 
     def execute(self, sql, params=None):
-        result = self._execute_raw(sql, params or [])
-        return _TursoResult(self._extract_rows(result))
+        cur = self.conn.execute(sql, params or ())
+        return _TursoResult(cur)
 
 
 class _TursoResult:
-    def __init__(self, rows):
-        self._rows = rows
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self._rows = cursor.fetchall()
+        self._cols = [d[0] for d in cursor.description] if cursor.description else []
 
     def fetchall(self):
-        return self._rows
+        return [dict(zip(self._cols, r)) if not isinstance(r, dict) else r for r in self._rows]
 
     def fetchone(self):
-        return self._rows[0] if self._rows else None
+        if not self._rows:
+            return None
+        r = self._rows[0]
+        return dict(zip(self._cols, r)) if not isinstance(r, dict) else r
 
     def scalar(self):
         if not self._rows:
             return None
-        return list(self._rows[0].values())[0]
+        r = self._rows[0]
+        return r[0] if not isinstance(r, dict) else list(r.values())[0]
 # ---------------------------------------------------------------------------
 # Stock ledger helpers + PBF / PRF interlink hooks
 # ---------------------------------------------------------------------------
