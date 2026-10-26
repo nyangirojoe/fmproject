@@ -1,4 +1,3 @@
 streamlit==1.40.0
 pandas
-sqlalchemy
-sqlalchemy-libsql
+libsql-experimental
