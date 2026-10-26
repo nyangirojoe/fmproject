@@ -86,15 +86,27 @@ class Database:
 
     def __init__(self):
         url, token = _turso_credentials()
-        self.connection = TursoConnection(
-            database_url=url,
-            auth_token=token,
-        )
+        self.connection = TursoConnection(database_url=url, auth_token=token)
         self.crud = TursoCRUD(self.connection)
 
     def _execute_raw(self, sql, params=None):
-        """Direct SQL execution through the underlying HTTP client."""
         return self.connection.execute(sql, params or [])
+
+    def _extract_rows(self, result):
+        """Handle both dict-style and list-style responses."""
+        if isinstance(result, dict):
+            cols = result.get("cols", [])
+            rows = result.get("rows", [])
+            return [dict(zip(cols, r)) for r in rows]
+        if isinstance(result, list):
+            out = []
+            for r in result:
+                if isinstance(r, dict):
+                    out.append(r)
+                elif isinstance(r, (list, tuple)):
+                    out.append({"value": r[0] if r else None})
+            return out
+        return []
 
     def create_schema(self, modules):
         for m in modules:
@@ -103,22 +115,10 @@ class Database:
                 f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
                 f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
             )
-            # Migration: add missing columns
-            info = self._execute_raw(f'PRAGMA table_info("{m["table"]}")')
-            rows = info.get("rows", []) if isinstance(info, dict) else []
-            existing = {r[1] for r in rows if len(r) > 1}
-            for f in m["fields"]:
-                if f["col"] not in existing:
-                    self._execute_raw(
-                        f'ALTER TABLE "{m["table"]}" ADD COLUMN '
-                        f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
-                    )
 
     def fetch(self, table, search=None):
         result = self._execute_raw(f'SELECT * FROM "{table}" ORDER BY id DESC')
-        rows = result.get("rows", []) if isinstance(result, dict) else []
-        cols = result.get("cols", []) if isinstance(result, dict) else []
-        records = [dict(zip(cols, r)) for r in rows]
+        records = self._extract_rows(result)
         if search:
             s = search.lower()
             records = [
@@ -128,38 +128,44 @@ class Database:
         return records
 
     def insert(self, table, data):
-        self.crud.create(table, data)
-        # Fetch last inserted row ID
+        cols = ", ".join(f'"{k}"' for k in data)
+        marks = ", ".join("?" for _ in data)
+        self._execute_raw(
+            f'INSERT INTO "{table}" ({cols}) VALUES ({marks})',
+            list(data.values()),
+        )
         result = self._execute_raw(f'SELECT MAX(id) AS rid FROM "{table}"')
-        rows = result.get("rows", []) if isinstance(result, dict) else []
-        return rows[0][0] if rows else None
+        rows = self._extract_rows(result)
+        return rows[0].get("rid") if rows else None
 
     def update(self, table, rid, data):
-        self.crud.update(table, data, where="id = ?", args=[rid])
+        sets = ", ".join(f'"{k}" = ?' for k in data)
+        self._execute_raw(
+            f'UPDATE "{table}" SET {sets} WHERE id = ?',
+            list(data.values()) + [rid],
+        )
 
     def delete(self, table, rid):
-        self.crud.delete(table, where="id = ?", args=[rid])
+        self._execute_raw(f'DELETE FROM "{table}" WHERE id = ?', [rid])
 
     def delete_all(self, table):
         self._execute_raw(f'DELETE FROM "{table}"')
 
     def count(self, table):
         result = self._execute_raw(f'SELECT COUNT(*) AS c FROM "{table}"')
-        rows = result.get("rows", []) if isinstance(result, dict) else []
-        return rows[0][0] if rows else 0
+        rows = self._extract_rows(result)
+        if not rows:
+            return 0
+        return list(rows[0].values())[0]
 
     def execute(self, sql, params=None):
-        """For the hooks from Chunks 2/3. Returns a wrapper with fetchall/fetchone."""
         result = self._execute_raw(sql, params or [])
-        return _TursoResult(result)
+        return _TursoResult(self._extract_rows(result))
 
 
 class _TursoResult:
-    def __init__(self, result):
-        if isinstance(result, dict):
-            self._rows = [dict(zip(result.get("cols", []), r)) for r in result.get("rows", [])]
-        else:
-            self._rows = []
+    def __init__(self, rows):
+        self._rows = rows
 
     def fetchall(self):
         return self._rows
