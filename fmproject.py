@@ -408,10 +408,10 @@ MODULES = [
         "fields": [
             T("contract_no", "Contract No.", 120), T("title", "Title", 200),
             T("contractor", "Contractor", 170),
-            C("contract_type", "Type", ["PPM", "CM", "PPM + CM", "Consultancy", "Supply", "Other"], 120),
+            C("contract_type", "Type", ["PPM", "CM", "PPM + CM", "Consultancy", "Supply", "Project and Service", "Other"], 120),
             D("start_date", "Start Date"), D("end_date", "End Date"),
             N("value", "Value", 110), T("currency", "Currency", 80),
-            C("status", "Status", ["Draft", "Active", "Expiring", "Expired", "Terminated"], 120),
+            C("status", "Status", ["Draft", "Active", "Live", "Expiring", "Expired", "Terminated"], 120),
             T("remarks", "Remarks", 180),
         ],
     },
