@@ -80,12 +80,15 @@ def _turso_credentials():
 
 
 class Database:
-    """Turso-backed database using turso_serverless, with auto-reconnect for
-    HTTP 404 'stream not found' errors that happen when a Turso stream expires."""
+    """Turso-backed database using turso_serverless.
+
+    Writes must be explicitly committed — remote Turso streams do not
+    auto-commit, and uncommitted writes are rolled back when the HTTP
+    stream expires. We also auto-reconnect on 'stream not found' errors.
+    """
 
     def __init__(self):
         self._url, self._token = _turso_credentials()
-        # turso_serverless needs https://, but secrets may store libsql://
         if self._url.startswith("libsql://"):
             self._url = "https://" + self._url[len("libsql://"):]
         self._connect()
@@ -105,6 +108,14 @@ class Database:
             self._connect()
             return self.conn.execute(sql, params or ())
 
+    def _commit(self):
+        try:
+            self.conn.commit()
+        except Exception:
+            # If commit fails because the stream died, reconnect and retry
+            self._connect()
+            self.conn.commit()
+
     def create_schema(self, modules):
         for m in modules:
             cols = ", ".join(
@@ -114,6 +125,7 @@ class Database:
                 f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
                 f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
             )
+        self._commit()
 
     def _rows_to_dicts(self, cursor):
         rows = cursor.fetchall()
@@ -140,10 +152,14 @@ class Database:
     def insert(self, table, data):
         cols = ", ".join(f'"{k}"' for k in data)
         marks = ", ".join("?" for _ in data)
-        self._execute(
+        cur = self._execute(
             f'INSERT INTO "{table}" ({cols}) VALUES ({marks})',
             list(data.values()),
         )
+        rid = getattr(cur, "lastrowid", None)
+        self._commit()
+        if rid is not None and rid != 0:
+            return rid
         cur = self._execute(f'SELECT MAX(id) AS rid FROM "{table}"')
         row = cur.fetchone()
         if row is None:
@@ -158,12 +174,15 @@ class Database:
             f'UPDATE "{table}" SET {sets} WHERE id = ?',
             list(data.values()) + [rid],
         )
+        self._commit()
 
     def delete(self, table, rid):
         self._execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
+        self._commit()
 
     def delete_all(self, table):
         self._execute(f'DELETE FROM "{table}"')
+        self._commit()
 
     def count(self, table):
         cur = self._execute(f'SELECT COUNT(*) AS c FROM "{table}"')
@@ -175,7 +194,6 @@ class Database:
         return row[0]
 
     def execute(self, sql, params=None):
-        """Public wrapper used by the hooks from Chunks 2/3."""
         cur = self._execute(sql, params)
         return _TursoResult(cur)
 
