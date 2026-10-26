@@ -80,33 +80,55 @@ def _turso_credentials():
 
 
 class Database:
-    def __init__(self):
-        url, token = _turso_credentials()
-        # turso_serverless needs https:// instead of libsql://
-        if url.startswith("libsql://"):
-            url = "https://" + url[len("libsql://"):]
-        self.conn = connect(url, auth_token=token)
+    """Turso-backed database using turso_serverless, with auto-reconnect for
+    HTTP 404 'stream not found' errors that happen when a Turso stream expires."""
 
-    def _row_to_dict(self, row, cols):
-        if row is None:
-            return None
-        if isinstance(row, dict):
-            return row
-        return dict(zip(cols, row))
+    def __init__(self):
+        self._url, self._token = _turso_credentials()
+        # turso_serverless needs https://, but secrets may store libsql://
+        if self._url.startswith("libsql://"):
+            self._url = "https://" + self._url[len("libsql://"):]
+        self._connect()
+
+    def _connect(self):
+        self.conn = connect(self._url, auth_token=self._token)
+
+    def _is_stream_error(self, exc):
+        return "stream not found" in str(exc).lower()
+
+    def _execute(self, sql, params=None):
+        try:
+            return self.conn.execute(sql, params or ())
+        except Exception as exc:
+            if not self._is_stream_error(exc):
+                raise
+            self._connect()
+            return self.conn.execute(sql, params or ())
 
     def create_schema(self, modules):
         for m in modules:
-            cols = ", ".join(f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"])
-            self.conn.execute(
+            cols = ", ".join(
+                f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"]
+            )
+            self._execute(
                 f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
                 f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
             )
 
+    def _rows_to_dicts(self, cursor):
+        rows = cursor.fetchall()
+        cols = [d[0] for d in cursor.description] if cursor.description else []
+        out = []
+        for r in rows:
+            if isinstance(r, dict):
+                out.append(r)
+            else:
+                out.append(dict(zip(cols, r)))
+        return out
+
     def fetch(self, table, search=None):
-        cur = self.conn.execute(f'SELECT * FROM "{table}" ORDER BY id DESC')
-        rows = cur.fetchall()
-        cols = [d[0] for d in cur.description] if cur.description else []
-        records = [self._row_to_dict(r, cols) for r in rows]
+        cur = self._execute(f'SELECT * FROM "{table}" ORDER BY id DESC')
+        records = self._rows_to_dicts(cur)
         if search:
             s = search.lower()
             records = [
@@ -118,34 +140,43 @@ class Database:
     def insert(self, table, data):
         cols = ", ".join(f'"{k}"' for k in data)
         marks = ", ".join("?" for _ in data)
-        self.conn.execute(
+        self._execute(
             f'INSERT INTO "{table}" ({cols}) VALUES ({marks})',
             list(data.values()),
         )
-        cur = self.conn.execute(f'SELECT MAX(id) AS rid FROM "{table}"')
+        cur = self._execute(f'SELECT MAX(id) AS rid FROM "{table}"')
         row = cur.fetchone()
-        return row[0] if row else None
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row.get("rid")
+        return row[0]
 
     def update(self, table, rid, data):
         sets = ", ".join(f'"{k}" = ?' for k in data)
-        self.conn.execute(
+        self._execute(
             f'UPDATE "{table}" SET {sets} WHERE id = ?',
             list(data.values()) + [rid],
         )
 
     def delete(self, table, rid):
-        self.conn.execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
+        self._execute(f'DELETE FROM "{table}" WHERE id = ?', (rid,))
 
     def delete_all(self, table):
-        self.conn.execute(f'DELETE FROM "{table}"')
+        self._execute(f'DELETE FROM "{table}"')
 
     def count(self, table):
-        cur = self.conn.execute(f'SELECT COUNT(*) AS c FROM "{table}"')
+        cur = self._execute(f'SELECT COUNT(*) AS c FROM "{table}"')
         row = cur.fetchone()
-        return row[0] if row else 0
+        if row is None:
+            return 0
+        if isinstance(row, dict):
+            return row.get("c", 0)
+        return row[0]
 
     def execute(self, sql, params=None):
-        cur = self.conn.execute(sql, params or ())
+        """Public wrapper used by the hooks from Chunks 2/3."""
+        cur = self._execute(sql, params)
         return _TursoResult(cur)
 
 
@@ -153,22 +184,30 @@ class _TursoResult:
     def __init__(self, cursor):
         self._cursor = cursor
         self._rows = cursor.fetchall()
-        self._cols = [d[0] for d in cursor.description] if cursor.description else []
+        self._cols = (
+            [d[0] for d in cursor.description] if cursor.description else []
+        )
+
+    def _as_dict(self, row):
+        if isinstance(row, dict):
+            return row
+        return dict(zip(self._cols, row))
 
     def fetchall(self):
-        return [dict(zip(self._cols, r)) if not isinstance(r, dict) else r for r in self._rows]
+        return [self._as_dict(r) for r in self._rows]
 
     def fetchone(self):
         if not self._rows:
             return None
-        r = self._rows[0]
-        return dict(zip(self._cols, r)) if not isinstance(r, dict) else r
+        return self._as_dict(self._rows[0])
 
     def scalar(self):
         if not self._rows:
             return None
         r = self._rows[0]
-        return r[0] if not isinstance(r, dict) else list(r.values())[0]
+        if isinstance(r, dict):
+            return list(r.values())[0]
+        return r[0]
 # ---------------------------------------------------------------------------
 # Stock ledger helpers + PBF / PRF interlink hooks
 # ---------------------------------------------------------------------------
