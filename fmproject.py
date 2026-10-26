@@ -1,18 +1,17 @@
-# fm_streamlit.py
-# Run:  streamlit run fm_streamlit.py
-# Optional DB path override:  FM_DB=/path/to/facility.db streamlit run fm_streamlit.py
+# fmproject.py
+# Run:  streamlit run fmproject.py
+# Deploy: Streamlit Community Cloud with Turso secrets configured.
 
 from __future__ import annotations
 
 import os
-from sqlalchemy import create_engine, text
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import create_engine, text
 
 APP_TITLE = "LijiArts Ltd — Facility Management"
-DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "facility.db")
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +63,6 @@ SQL_TYPE = {"text": "TEXT", "number": "REAL", "date": "TEXT", "choice": "TEXT"}
 
 
 def _turso_credentials():
-    """Read Turso URL + token from Streamlit secrets, with clear errors."""
     try:
         url = st.secrets["turso"]["url"]
         token = st.secrets["turso"]["token"]
@@ -79,22 +77,17 @@ def _turso_credentials():
 
 
 class Database:
-    """Turso-backed database. Same method names as the old sqlite3 version,
-    so the rest of the app works unchanged."""
+    """Turso-backed database. Same method names as the old sqlite3 version."""
 
     def __init__(self):
         url, token = _turso_credentials()
-        # sqlalchemy-libsql uses the form: sqlite+libsql://host?authToken=...
-        # The plain `libsql://` scheme also works, but the explicit
-        # `sqlite+libsql://` form is what the dialect recognises.
-        host = url.replace("libsql://", "")
+        host = url.replace("libsql://", "").replace("https://", "")
         db_url = f"sqlite+libsql://{host}?authToken={token}&secure=true"
         self.engine = create_engine(
             db_url,
             connect_args={"check_same_thread": False},
             pool_pre_ping=True,
         )
-        # Local session alias so the rest of the app doesn't have to change.
         self.conn = _EngineConn(self.engine)
 
     def create_schema(self, modules):
@@ -107,9 +100,8 @@ class Database:
                     f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
                     f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
                 ))
-                # Migration: add missing columns on older DBs.
                 existing = {
-                    row[1]  # PRAGMA table_info: column name is index 1
+                    row[1]
                     for row in conn.execute(text(
                         f'PRAGMA table_info("{m["table"]}")'
                     )).fetchall()
@@ -137,13 +129,17 @@ class Database:
 
     def insert(self, table, data):
         cols = ", ".join(f'"{k}"' for k in data)
-        marks = ", ".join(f":{k}" for k in data)  # named params
+        marks = ", ".join(f":{k}" for k in data)
         with self.engine.begin() as conn:
             result = conn.execute(
                 text(f'INSERT INTO "{table}" ({cols}) VALUES ({marks})'),
                 data,
             )
             rid = result.lastrowid
+            if rid is None:
+                rid = conn.execute(
+                    text("SELECT last_insert_rowid() AS rid")
+                ).scalar()
         return rid
 
     def update(self, table, rid, data):
@@ -174,9 +170,6 @@ class Database:
             ).scalar()
 
     def execute(self, sql: str, params=None):
-        """Raw SQL helper for the .execute() call sites in the hooks.
-        Returns a _Result wrapper with .fetchall() / .fetchone() / .scalar()
-        so existing code keeps working."""
         params = params or {}
         with self.engine.begin() as conn:
             result = conn.execute(text(sql), params)
@@ -184,8 +177,6 @@ class Database:
 
 
 class _Result:
-    """Thin wrapper to mimic sqlite3.Cursor's read API."""
-
     def __init__(self, result):
         self._rows = result.fetchall() if result.returns_rows else []
         self._lastrowid = getattr(result, "lastrowid", None)
@@ -207,8 +198,6 @@ class _Result:
 
 
 class _EngineConn:
-    """Adapter so the old `db.conn.execute(...)` calls still work.
-    Delegates to db.execute()."""
     def __init__(self, engine):
         self._engine = engine
 
@@ -219,8 +208,8 @@ class _EngineConn:
             return _Result(result)
 
     def commit(self):
-        # SQLAlchemy begin() blocks commit automatically.
         pass
+
 
 # ---------------------------------------------------------------------------
 # Stock ledger helpers + PBF / PRF interlink hooks
@@ -306,6 +295,7 @@ def _refresh_pbf_status(db, borrow_no):
         {"st": status, "rid": pbf["id"]},
     )
 
+
 def pbf_pre_save(db, data, record_id):
     if not data.get("part_no"):
         return False, "Part No. is required."
@@ -322,6 +312,7 @@ def pbf_pre_save(db, data, record_id):
                 "Add stock first via a GRN voucher in the **SV** module."
             )
     return True, ""
+
 
 def pbf_post_save(db, record_id, data, is_new):
     if not is_new:
@@ -373,7 +364,6 @@ def prf_pre_save(db, data, record_id):
     qty = data.get("qty")
     if qty is None or qty <= 0:
         return False, "Return quantity must be greater than zero."
-
     if record_id is not None:
         row = db.execute(
             "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return "
@@ -387,7 +377,6 @@ def prf_pre_save(db, data, record_id):
             {"bn": borrow_no},
         ).fetchone()
     returned = (row["s"] if row else 0) or 0.0
-
     borrowed = pbf["qty"] or 0.0
     outstanding = borrowed - returned
     if qty > outstanding:
@@ -400,7 +389,6 @@ def prf_pre_save(db, data, record_id):
     if pbf["description"] and not data.get("description"):
         data["description"] = pbf["description"]
     return True, ""
-
 
 
 def prf_post_save(db, record_id, data, is_new):
@@ -436,9 +424,7 @@ def sv_pre_delete(db, record_id, data):
             "Delete the source PBF / PRF record instead."
         )
     return True, ""
-
-
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
 # Modules
 # ---------------------------------------------------------------------------
 MODULES = [
@@ -571,6 +557,7 @@ def get_db() -> Database:
     db.create_schema(MODULES)
     return db
 
+
 # ---------------------------------------------------------------------------
 # Form field rendering
 # ---------------------------------------------------------------------------
@@ -652,9 +639,6 @@ def validate_numbers(module, data) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Module page
-# ---------------------------------------------------------------------------
 def _row_defaults(module, row: dict | None) -> dict:
     if not row:
         return {}
@@ -833,9 +817,7 @@ def render_module(module, db: Database):
                 st.rerun()
             except Exception as exc:
                 st.error(f"Bulk delete failed: {exc}")
-
-
-# ---------------------------------------------------------------------------
+                # ---------------------------------------------------------------------------
 # Stock Balance page
 # ---------------------------------------------------------------------------
 def render_stock_balance(db: Database):
@@ -916,7 +898,6 @@ def main():
 
     db = get_db()
 
-    # ----- Header -----
     hdr_col1, hdr_col2 = st.columns([1, 6])
     with hdr_col1:
         st.markdown(
@@ -935,9 +916,8 @@ def main():
         )
     with hdr_col2:
         st.markdown("## LijiArts Ltd")
-        st.caption("Facility Management")
+        st.caption("Facility Management — DB: Turso (persistent)")
 
-    # ----- Sidebar module selector -----
     tab_labels = [m["name"] for m in MODULES]
     sv_idx = next(i for i, m in enumerate(MODULES) if m["table"] == "sv_stock_voucher")
     tab_labels.insert(sv_idx + 1, "Stock Balance")
