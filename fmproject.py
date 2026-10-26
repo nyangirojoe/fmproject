@@ -180,24 +180,8 @@ class _TursoResult:
 # ---------------------------------------------------------------------------
 # Stock ledger helpers + PBF / PRF interlink hooks
 # ---------------------------------------------------------------------------
+
 def _stock_on_hand(db, part_no):
-    if not part_no:
-        return 0.0
-    rows = db.execute(
-        "SELECT voucher_type, qty FROM sv_stock_voucher WHERE part_no = ?",
-        (part_no,),
-    ).fetchall()
-    bal = 0.0
-    for r in rows:
-        vt = (r["voucher_type"] or "").strip().lower()
-        q = r["qty"] or 0.0
-        if vt in ("grn", "return"):
-            bal += q
-        elif vt == "issue":
-            bal -= q
-        elif vt in ("transfer", "adjustment"):
-            bal += q
-    return baldef _stock_on_hand(db, part_no):
     if not part_no:
         return 0.0
     rows = db.execute(
