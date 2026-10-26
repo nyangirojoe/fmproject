@@ -181,8 +181,25 @@ def _stock_on_hand(db, part_no):
     if not part_no:
         return 0.0
     rows = db.execute(
-        "SELECT voucher_type, qty FROM sv_stock_voucher WHERE part_no = :part_no",
-        {"part_no": part_no},
+        "SELECT voucher_type, qty FROM sv_stock_voucher WHERE part_no = ?",
+        (part_no,),
+    ).fetchall()
+    bal = 0.0
+    for r in rows:
+        vt = (r["voucher_type"] or "").strip().lower()
+        q = r["qty"] or 0.0
+        if vt in ("grn", "return"):
+            bal += q
+        elif vt == "issue":
+            bal -= q
+        elif vt in ("transfer", "adjustment"):
+            bal += q
+    return baldef _stock_on_hand(db, part_no):
+    if not part_no:
+        return 0.0
+    rows = db.execute(
+        "SELECT voucher_type, qty FROM sv_stock_voucher WHERE part_no = ?",
+        (part_no,),
     ).fetchall()
     bal = 0.0
     for r in rows:
@@ -227,8 +244,8 @@ def _create_auto_sv(db, *, vtype, when, part_no, description, qty, uom,
 
 def _delete_auto_sv(db, ref_table, ref_id):
     db.execute(
-        "DELETE FROM sv_stock_voucher WHERE ref_table = :rt AND ref_id = :rid",
-        {"rt": ref_table, "rid": ref_id},
+        "DELETE FROM sv_stock_voucher WHERE ref_table = ? AND ref_id = ?",
+        (ref_table, ref_id),
     )
 
 
@@ -236,15 +253,15 @@ def _refresh_pbf_status(db, borrow_no):
     if not borrow_no:
         return
     pbf = db.execute(
-        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = :bn",
-        {"bn": borrow_no},
+        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = ?",
+        (borrow_no,),
     ).fetchone()
     if pbf is None:
         return
     borrowed = pbf["qty"] or 0.0
     row = db.execute(
-        "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return WHERE borrow_no = :bn",
-        {"bn": borrow_no},
+        "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return WHERE borrow_no = ?",
+        (borrow_no,),
     ).fetchone()
     returned = (row["s"] if row else 0) or 0.0
     if returned <= 0:
@@ -254,8 +271,8 @@ def _refresh_pbf_status(db, borrow_no):
     else:
         status = "Returned"
     db.execute(
-        "UPDATE pbf_part_borrowing SET status = :st WHERE id = :rid",
-        {"st": status, "rid": pbf["id"]},
+        "UPDATE pbf_part_borrowing SET status = ? WHERE id = ?",
+        (status, pbf["id"]),
     )
 
 
@@ -303,14 +320,14 @@ def pbf_post_delete(db, record_id, data):
     borrow_no = data.get("borrow_no")
     if borrow_no:
         prfs = db.execute(
-            "SELECT id FROM prf_part_return WHERE borrow_no = :bn",
-            {"bn": borrow_no},
+            "SELECT id FROM prf_part_return WHERE borrow_no = ?",
+            (borrow_no,),
         ).fetchall()
         for r in prfs:
             _delete_auto_sv(db, "prf_part_return", r["id"])
         db.execute(
-            "DELETE FROM prf_part_return WHERE borrow_no = :bn",
-            {"bn": borrow_no},
+            "DELETE FROM prf_part_return WHERE borrow_no = ?",
+            (borrow_no,),
         )
 
 
@@ -319,8 +336,8 @@ def prf_pre_save(db, data, record_id):
     if not borrow_no:
         return False, "Ref. Borrow No. is required to link a return to a borrowing."
     pbf = db.execute(
-        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = :bn",
-        {"bn": borrow_no},
+        "SELECT * FROM pbf_part_borrowing WHERE borrow_no = ?",
+        (borrow_no,),
     ).fetchone()
     if pbf is None:
         return False, f"No borrowing found with Borrow No. **{borrow_no}**."
@@ -330,14 +347,14 @@ def prf_pre_save(db, data, record_id):
     if record_id is not None:
         row = db.execute(
             "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return "
-            "WHERE borrow_no = :bn AND id != :rid",
-            {"bn": borrow_no, "rid": record_id},
+            "WHERE borrow_no = ? AND id != ?",
+            (borrow_no, record_id),
         ).fetchone()
     else:
         row = db.execute(
             "SELECT COALESCE(SUM(qty), 0) AS s FROM prf_part_return "
-            "WHERE borrow_no = :bn",
-            {"bn": borrow_no},
+            "WHERE borrow_no = ?",
+            (borrow_no,),
         ).fetchone()
     returned = (row["s"] if row else 0) or 0.0
     borrowed = pbf["qty"] or 0.0
