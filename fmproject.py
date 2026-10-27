@@ -125,6 +125,16 @@ class Database:
                 f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
                 f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols})"
             )
+            # Migration: add any columns missing from an older schema
+            info_cur = self._execute(f'PRAGMA table_info("{m["table"]}")')
+            info = _TursoResult(info_cur).fetchall()
+            existing = {row["name"] for row in info if "name" in row}
+            for f in m["fields"]:
+                if f["col"] not in existing:
+                    self._execute(
+                        f'ALTER TABLE "{m["table"]}" ADD COLUMN '
+                        f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
+                    )
         self._commit()
 
     def _rows_to_dicts(self, cursor):
