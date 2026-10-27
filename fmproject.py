@@ -459,9 +459,7 @@ MODULES = [
         "table": "asset_register",
         "fields": [
             T("asset_code", "Asset Code", 110), T("asset_name", "Asset Name", 180),
-            C("category", "Category", ["HVAC", "Electrical", "Plumbing", "Fire & Safety",
-                                       "Elevator", "Civil / Structural", "IT / ELV",
-                                       "Kitchen", "Other"], 130),
+            C("category", "Category", ["Fire Alarm", "Room Management"], 130),
             T("location", "Location", 150), T("manufacturer", "Manufacturer", 130),
             T("model", "Model", 110), T("serial_no", "Serial No.", 120),
             D("install_date", "Install Date"),
