@@ -466,6 +466,8 @@ MODULES = [
             T("model", "Model", 110), T("serial_no", "Serial No.", 120),
             D("install_date", "Install Date"),
             C("status", "Status", ["Active", "Under Maintenance", "Out of Service", "Retired"], 130),
+            T("contract_no", "Contract No.", 120),
+            T("venue", "Venue", 130),
             T("remarks", "Remarks", 200),
         ],
     },
@@ -500,12 +502,15 @@ MODULES = [
         "table": "ppm_schedule",
         "fields": [
             T("ppm_no", "PPM No.", 110), T("asset_code", "Asset Code", 110),
+            T("contract_no", "Contract No.", 120),
+            T("venue", "Venue", 130),
             T("task", "Task / Activity", 240),
             C("frequency", "Frequency", ["Daily", "Weekly", "Monthly", "Quarterly",
                                           "Semi-Annual", "Annual", "Bi-Annual"], 110),
             D("planned_date", "Planned"), D("last_done", "Last Done"),
             D("next_due", "Next Due"), T("assigned_to", "Assigned To", 130),
             C("status", "Status", ["Scheduled", "In Progress", "Completed", "Overdue", "Skipped"], 120),
+            N("qty", "Qty", 70),
             T("remarks", "Remarks", 160),
         ],
     },
@@ -915,6 +920,182 @@ def render_stock_balance(db: Database):
     )
     st.caption(f"{len(agg)} part(s)")
 
+# ---------------------------------------------------------------------------
+# PPM Generator page
+# ---------------------------------------------------------------------------
+def render_ppm_generator(db: Database):
+    st.subheader("PPM Generator")
+    st.caption("Generate and view PPMs filtered by contract and venue.")
+
+    # Load contracts and build display labels
+    contracts = db.fetch("contracts")
+    contract_options = {}
+    for c in contracts:
+        cn = (c.get("contract_no") or "").strip()
+        title = (c.get("title") or "").strip()
+        label = f"{cn} — {title}" if cn and title else (cn or title or f"Contract #{c['id']}")
+        contract_options[label] = c
+
+    col_a, col_b, col_c = st.columns([2, 2, 1])
+
+    with col_a:
+        contract_sel = st.selectbox(
+            "Select contract",
+            options=[""] + list(contract_options.keys()),
+            key="ppm_contract_sel",
+        )
+
+    contract_no = ""
+    if contract_sel:
+        contract_no = contract_options[contract_sel].get("contract_no") or ""
+
+    # Load all assets; filter to this contract to derive venue list
+    all_assets = db.fetch("asset_register")
+    if contract_no:
+        contract_assets = [a for a in all_assets if (a.get("contract_no") or "") == contract_no]
+    else:
+        contract_assets = all_assets
+
+    venue_set = set()
+    for a in contract_assets:
+        v = (a.get("venue") or a.get("location") or "").strip()
+        if v:
+            venue_set.add(v)
+    venues = sorted(venue_set)
+
+    # Reset-venue trick: changing the widget key clears its state
+    if "ppm_venue_reset_counter" not in st.session_state:
+        st.session_state.ppm_venue_reset_counter = 0
+    venue_key = f"ppm_venue_sel_{st.session_state.ppm_venue_reset_counter}"
+
+    with col_b:
+        venue_sel = st.selectbox(
+            "Select venue",
+            options=[""] + venues,
+            key=venue_key,
+        )
+
+    with col_c:
+        st.write("")  # small vertical alignment
+        if st.button("🔄 Reset venue", key="ppm_reset_venue_btn"):
+            st.session_state.ppm_venue_reset_counter += 1
+            st.rerun()
+
+    # Frequency dropdown
+    freq = st.selectbox(
+        "Frequency",
+        ["", "Daily", "Weekly", "Monthly", "Quarterly", "Semi-Annual", "Annual", "Bi-Annual"],
+        key="ppm_freq_sel",
+    )
+
+    # Assets under the current filter
+    if venue_sel:
+        filtered_assets = [
+            a for a in contract_assets
+            if (a.get("venue") or a.get("location") or "").strip() == venue_sel
+        ]
+    else:
+        filtered_assets = contract_assets
+
+    # ---------- Save now ----------
+    st.write("")
+    save_now = st.button("💾 Save now", key="ppm_save_btn", type="primary")
+
+    if save_now:
+        if not contract_sel:
+            st.error("Select a contract first.")
+        elif not freq:
+            st.error("Select a frequency.")
+        elif not filtered_assets:
+            st.error("No assets match the current selection. Assign assets to this contract first.")
+        else:
+            today = datetime.now()
+            planned = today.strftime("%Y-%m-%d")
+            month_key = today.strftime("%Y-%m")
+            created = 0
+            skipped = 0
+            existing_ppms = db.fetch("ppm_schedule")
+            existing_set = {
+                (p.get("asset_code"), p.get("contract_no"), p.get("venue") or "", (p.get("planned_date") or "")[:7])
+                for p in existing_ppms
+            }
+            for a in filtered_assets:
+                asset_code = a.get("asset_code") or ""
+                venue_val = venue_sel or (a.get("venue") or a.get("location") or "")
+                dedup_key = (asset_code, contract_no, venue_val, month_key)
+                if dedup_key in existing_set:
+                    skipped += 1
+                    continue
+                record = {
+                    "ppm_no": f"PPM-{asset_code}-{month_key}",
+                    "asset_code": asset_code,
+                    "contract_no": contract_no,
+                    "venue": venue_val,
+                    "task": f"PPM for {a.get('asset_name') or asset_code}",
+                    "frequency": freq,
+                    "planned_date": planned,
+                    "status": "Scheduled",
+                    "qty": 1,
+                }
+                db.insert("ppm_schedule", record)
+                created += 1
+            msg = f"Created {created} PPM record(s)."
+            if skipped:
+                msg += f" Skipped {skipped} that already exist for this month."
+            st.success(msg)
+            st.rerun()
+
+    # ---------- Show current month PPMs ----------
+    st.divider()
+    show_current = st.checkbox("Show current month PPMs", value=True, key="ppm_show_current")
+    if show_current:
+        current_month = datetime.now().strftime("%Y-%m")
+        all_ppms = db.fetch("ppm_schedule")
+        monthly = [p for p in all_ppms if (p.get("planned_date") or "")[:7] == current_month]
+        if contract_no:
+            monthly = [p for p in monthly if (p.get("contract_no") or "") == contract_no]
+        if venue_sel:
+            monthly = [p for p in monthly if (p.get("venue") or "") == venue_sel]
+
+        st.markdown(f"#### Current month ({current_month}) — {len(monthly)} PPM(s)")
+
+        if monthly:
+            cols_to_show = [f for f in (
+                "ppm_no", "asset_code", "contract_no", "venue", "task",
+                "frequency", "planned_date", "status", "qty",
+            )]
+            df = pd.DataFrame([{c: p.get(c) for c in cols_to_show} for p in monthly])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No PPMs match the current filter for this month.")
+
+        # Total quantity metric
+        total_qty = sum((p.get("qty") or 1) for p in monthly)
+        c1, c2 = st.columns(2)
+        c1.metric("Total PPM records", len(monthly))
+        c2.metric("Total quantity", total_qty)
+
+    # ---------- Assets under contract ----------
+    st.divider()
+    st.markdown("#### Assets under contract")
+    if not contract_sel:
+        st.info("Select a contract to see assets.")
+    else:
+        scope = f"{contract_sel}"
+        if venue_sel:
+            scope += f" @ {venue_sel}"
+        st.caption(f"{len(filtered_assets)} asset(s) — {scope}")
+        if filtered_assets:
+            asset_cols = [c for c in (
+                "asset_code", "asset_name", "category", "location",
+                "venue", "contract_no", "status",
+            ) if any(c in a for a in filtered_assets)]
+            df = pd.DataFrame([{c: a.get(c) for c in asset_cols} for a in filtered_assets])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No assets associated with this contract/venue. "
+                    "Open **Asset Register** and fill in Contract No. / Venue on each asset.")
+
 
 # ---------------------------------------------------------------------------
 # App shell
@@ -947,6 +1128,9 @@ def main():
     tab_labels = [m["name"] for m in MODULES]
     sv_idx = next(i for i, m in enumerate(MODULES) if m["table"] == "sv_stock_voucher")
     tab_labels.insert(sv_idx + 1, "Stock Balance")
+    ppm_label = next(m["name"] for m in MODULES if m["table"] == "ppm_schedule")
+    ppm_pos = tab_labels.index(ppm_label)
+    tab_labels.insert(ppm_pos + 1, "PPM Generator")
 
     with st.sidebar:
         st.header("Modules")
@@ -958,6 +1142,8 @@ def main():
 
     if selected_tab == "Stock Balance":
         render_stock_balance(db)
+    elif selected_tab == "PPM Generator":
+        render_ppm_generator(db)
     else:
         module = next(m for m in MODULES if m["name"] == selected_tab)
         render_module(module, db)
