@@ -470,8 +470,7 @@ MODULES = [
         "name": "Contracts",
         "table": "contracts",
         "fields": [
-            T("contract_no", "Contract No.", 120), T("title", "Title", 200),
-            T("contractor", "Contractor", 170),
+            T("contract_no", "Contract No.", 120),
             C("contract_type", "Type", ["PPM", "CM", "PPM + CM", "Consultancy", "Supply", "Project and Service", "Other"], 120),
             D("start_date", "Start Date"), D("end_date", "End Date"),
             N("value", "Value", 110), T("currency", "Currency", 80),
