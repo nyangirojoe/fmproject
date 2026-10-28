@@ -483,7 +483,8 @@ MODULES = [
         "name": "PPM — Preventive",
         "table": "ppm_schedule",
         "fields": [
-            T("ppm_no", "PPM No.", 110), T("asset_code", "Asset Code", 110),
+            T("ppm_no", "PPM No.", 110),
+            T("asset_name", "Asset Name", 180),
             T("contract_no", "Contract No.", 120),
             T("venue", "Venue", 130),
             T("task", "Task / Activity", 240),
