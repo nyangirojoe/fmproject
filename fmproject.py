@@ -479,19 +479,7 @@ MODULES = [
             T("remarks", "Remarks", 180),
         ],
     },
-    {
-        "name": "CM — Corrective",
-        "table": "cm_work_orders",
-        "fields": [
-            T("wo_no", "WO No.", 110), T("asset_code", "Asset Code", 110),
-            D("reported_date", "Reported"), T("description", "Fault / Description", 240),
-            C("priority", "Priority", ["Low", "Medium", "High", "Critical"], 100),
-            T("assigned_to", "Assigned To", 130),
-            C("status", "Status", ["Open", "In Progress", "On Hold", "Completed", "Closed"], 120),
-            D("completion_date", "Completed"), N("cost", "Cost", 90),
-            T("remarks", "Remarks", 180),
-        ],
-    },
+    
     {
         "name": "PPM — Preventive",
         "table": "ppm_schedule",
