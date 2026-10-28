@@ -1037,8 +1037,8 @@ def render_ppm_generator(db: Database):
     with col_f:
         freq = st.selectbox(
             "Frequency",
-            ["", "Daily", "Weekly", "Monthly", "Quarterly",
-             "Semi-Annual", "Annual", "Bi-Annual"],
+            ["", "Q", "Q,Y", "Q,HY,Y", "HY",
+             "Y", "CM Only"],
             key=f"ppm_freq_sel_{counter}",
         )
 
