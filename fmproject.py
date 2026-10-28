@@ -505,7 +505,7 @@ MODULES = [
             T("task", "Task / Activity", 240),
             C("frequency", "Frequency", ["Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"], 130),
             D("planned_date", "Planned"), D("last_done", "Last Done"),
-            D("next_due", "Next Due"), T("assigned_to", "Assigned To", 130),
+            D("next_due", "Next Due"), T("current_ppm", "Current PPM", 140),
             C("status", "Status", ["Scheduled", "In Progress", "Completed", "Overdue", "Skipped"], 120),
             N("qty", "Qty", 70),
             T("remarks", "Remarks", 160),
@@ -920,6 +920,74 @@ def render_stock_balance(db: Database):
 # ---------------------------------------------------------------------------
 # PPM Generator page
 # ---------------------------------------------------------------------------
+def _cycle_label(frequency: str, month_num: int, is_current_month: bool = False) -> str:
+    """Return a cycle label like 'Q2', 'Q1+H1+Y', 'H1', 'Y', 'CM Only'."""
+    if not frequency or not month_num:
+        return ""
+    freq = frequency.strip().upper()
+    comps = [c.strip() for c in freq.split(",")]
+    parts = []
+    quarter = (month_num - 1) // 3 + 1
+    half = (month_num - 1) // 6 + 1
+
+    if "Q" in comps:
+        parts.append(f"Q{quarter}")
+    if "HY" in comps:
+        parts.append(f"H{half}")
+    if "Y" in comps:
+        if month_num == 1 or not parts:
+            parts.append("Y")
+
+    if not parts:
+        label = "CM Only" if freq == "CM ONLY" else frequency
+    else:
+        label = "+".join(parts)
+
+    if is_current_month:
+        label += " ★"
+    return label
+
+
+def _update_ppm_schedule_fields(db, asset_code, contract_no, venue):
+    """Recompute last_done, next_due and current_ppm for all PPMs of one asset."""
+    rows = db.execute(
+        "SELECT * FROM ppm_schedule "
+        "WHERE asset_code = ? AND contract_no = ? AND venue = ? "
+        "ORDER BY planned_date",
+        (asset_code or "", contract_no or "", venue or ""),
+    ).fetchall()
+
+    if not rows:
+        return
+
+    current_month_key = datetime.now().strftime("%Y-%m")
+
+    for i, p in enumerate(rows):
+        last_done = (rows[i - 1].get("planned_date") or "") if i > 0 else ""
+        next_due = (rows[i + 1].get("planned_date") or "") if i < len(rows) - 1 else ""
+
+        freq = p.get("frequency") or ""
+        planned = p.get("planned_date") or ""
+        try:
+            month_num = int(planned[5:7]) if len(planned) >= 7 else 0
+        except (ValueError, IndexError):
+            month_num = 0
+
+        is_current = planned[:7] == current_month_key
+        label = _cycle_label(freq, month_num, is_current)
+
+        if (
+            (p.get("last_done") or "") != last_done
+            or (p.get("next_due") or "") != next_due
+            or (p.get("current_ppm") or "") != label
+        ):
+            db.update("ppm_schedule", p["id"], {
+                "last_done": last_done,
+                "next_due": next_due,
+                "current_ppm": label,
+            })
+
+
 def render_ppm_generator(db: Database):
     st.subheader("PPM Generator")
     st.caption("Generate and view PPMs by contract, venue, asset, location and month.")
@@ -1076,9 +1144,31 @@ def render_ppm_generator(db: Database):
     if not selected_months:
         st.warning("Select at least one month.")
 
-    # ---------- save now ----------
+    # ---------- save now / refresh ----------
     st.write("")
-    save_now = st.button("💾 Save now", key="ppm_save_btn", type="primary")
+    save_col, refresh_col = st.columns([2, 2])
+    with save_col:
+        save_now = st.button("💾 Save now", key="ppm_save_btn", type="primary")
+    with refresh_col:
+        if st.button("🔄 Refresh schedule fields", key="ppm_refresh_btn"):
+            with st.spinner("Recomputing last done / next due / current PPM…"):
+                all_ppms = db.fetch("ppm_schedule")
+                seen = set()
+                for p in all_ppms:
+                    key = (
+                        (p.get("asset_code") or "").strip(),
+                        (p.get("contract_no") or "").strip(),
+                        (p.get("venue") or "").strip(),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    try:
+                        _update_ppm_schedule_fields(db, key[0], key[1], key[2])
+                    except Exception as exc:
+                        st.warning(f"Update failed for {key[0]}: {exc}")
+            st.success(f"Refreshed {len(seen)} asset schedule(s).")
+            st.rerun()
 
     if save_now:
         if not contract_sel:
@@ -1134,6 +1224,20 @@ def render_ppm_generator(db: Database):
                     db.insert("ppm_schedule", record)
                     created += 1
                     existing_set.add(dedup_key)
+
+            # Recompute last_done / next_due / current_ppm for every asset we touched
+            touched = set()
+            for a in filtered_assets:
+                touched.add((
+                    (a.get("asset_code") or "").strip(),
+                    contract_no,
+                    venue_sel or (a.get("venue") or a.get("location") or "").strip(),
+                ))
+            for ac, cno, v in touched:
+                try:
+                    _update_ppm_schedule_fields(db, ac, cno, v)
+                except Exception as exc:
+                    st.warning(f"Could not refresh schedule for {ac}: {exc}")
 
             msg = f"Created {created} PPM record(s) across {len(selected_months)} month(s)."
             if skipped:
