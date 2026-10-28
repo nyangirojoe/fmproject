@@ -975,7 +975,7 @@ def _update_ppm_schedule_fields(db, asset_code, contract_no, venue):
 
 def render_ppm_generator(db: Database):
     st.subheader("PPM Generator")
-    st.caption("Generate and view PPMs by contract, venue, asset, location and month.")
+    st.caption("Generate and view PPMs by contract, venue, asset and month.")
 
     if "ppm_reset_counter" not in st.session_state:
         st.session_state.ppm_reset_counter = 0
@@ -1036,19 +1036,19 @@ def render_ppm_generator(db: Database):
     if venue_sel:
         stage_assets = [
             a for a in contract_assets
-            if (a.get("venue") or a.get("location") or "").strip() == venue_sel
+            if (a.get("venue") or "").strip() == venue_sel
         ]
     else:
         stage_assets = contract_assets
 
-    # ---------- row 2: asset name / location / frequency ----------
+    # ---------- row 2: asset name / frequency ----------
     asset_names = sorted({
         (a.get("asset_name") or "").strip()
         for a in stage_assets
         if (a.get("asset_name") or "").strip()
     })
 
-    col_d, col_e, col_f = st.columns([2, 2, 2])
+    col_d, col_f = st.columns([3, 2])
 
     with col_d:
         asset_sel = st.selectbox(
@@ -1058,33 +1058,12 @@ def render_ppm_generator(db: Database):
         )
 
     if asset_sel:
-        stage_assets2 = [
+        filtered_assets = [
             a for a in stage_assets
             if (a.get("asset_name") or "").strip() == asset_sel
         ]
     else:
-        stage_assets2 = stage_assets
-
-    locations = sorted({
-        (a.get("location") or "").strip()
-        for a in stage_assets2
-        if (a.get("location") or "").strip()
-    })
-
-    with col_e:
-        location_sel = st.selectbox(
-            "Select location",
-            options=[""] + locations,
-            key=f"ppm_location_sel_{counter}_{venue_sel}_{asset_sel}",
-        )
-
-    if location_sel:
-        filtered_assets = [
-            a for a in stage_assets2
-            if (a.get("location") or "").strip() == location_sel
-        ]
-    else:
-        filtered_assets = stage_assets2
+        filtered_assets = stage_assets
 
     with col_f:
         freq = st.selectbox(
@@ -1093,7 +1072,7 @@ def render_ppm_generator(db: Database):
             key=f"ppm_freq_sel_{counter}",
         )
 
-    # ---------- month selection (checkboxes) ----------
+    # ---------- month selection ----------
     st.markdown("#### Months")
     current_year = datetime.now().year
     current_month = datetime.now().month
@@ -1129,7 +1108,7 @@ def render_ppm_generator(db: Database):
     if not selected_months:
         st.warning("Select at least one month.")
 
-    # ---------- save now / refresh ----------
+    # ---------- save / refresh ----------
     st.write("")
     save_col, refresh_col = st.columns([2, 2])
     with save_col:
@@ -1141,7 +1120,7 @@ def render_ppm_generator(db: Database):
                 seen = set()
                 for p in all_ppms:
                     key = (
-                        (p.get("asset_code") or "").strip(),
+                        (p.get("asset_name") or "").strip(),
                         (p.get("contract_no") or "").strip(),
                         (p.get("venue") or "").strip(),
                     )
@@ -1171,7 +1150,7 @@ def render_ppm_generator(db: Database):
             existing_ppms = db.fetch("ppm_schedule")
             existing_set = {
                 (
-                    (p.get("asset_code") or "").strip(),
+                    (p.get("asset_name") or "").strip(),
                     (p.get("contract_no") or "").strip(),
                     (p.get("venue") or "").strip(),
                     (p.get("planned_date") or "")[:7],
@@ -1189,18 +1168,18 @@ def render_ppm_generator(db: Database):
                     planned = f"{year_sel}-{month_num:02d}-01"
 
                 for a in filtered_assets:
-                    asset_code = (a.get("asset_code") or "").strip()
-                    venue_val = venue_sel or (a.get("venue") or a.get("location") or "").strip()
-                    dedup_key = (asset_code, contract_no, venue_val, month_key)
+                    asset_name = (a.get("asset_name") or "").strip()
+                    venue_val = venue_sel or (a.get("venue") or "").strip()
+                    dedup_key = (asset_name, contract_no, venue_val, month_key)
                     if dedup_key in existing_set:
                         skipped += 1
                         continue
                     record = {
-                        "ppm_no": f"PPM-{asset_code}-{month_key}",
-                        "asset_code": asset_code,
+                        "ppm_no": f"PPM-{asset_name}-{month_key}",
+                        "asset_name": asset_name,
                         "contract_no": contract_no,
                         "venue": venue_val,
-                        "task": f"PPM for {a.get('asset_name') or asset_code}",
+                        "task": f"PPM for {asset_name}",
                         "frequency": freq,
                         "planned_date": planned,
                         "status": "Scheduled",
@@ -1210,19 +1189,18 @@ def render_ppm_generator(db: Database):
                     created += 1
                     existing_set.add(dedup_key)
 
-            # Recompute last_done / next_due / current_ppm for every asset we touched
             touched = set()
             for a in filtered_assets:
                 touched.add((
-                    (a.get("asset_code") or "").strip(),
+                    (a.get("asset_name") or "").strip(),
                     contract_no,
-                    venue_sel or (a.get("venue") or a.get("location") or "").strip(),
+                    venue_sel or (a.get("venue") or "").strip(),
                 ))
-            for ac, cno, v in touched:
+            for name, cno, v in touched:
                 try:
-                    _update_ppm_schedule_fields(db, ac, cno, v)
+                    _update_ppm_schedule_fields(db, name, cno, v)
                 except Exception as exc:
-                    st.warning(f"Could not refresh schedule for {ac}: {exc}")
+                    st.warning(f"Could not refresh schedule for {name}: {exc}")
 
             msg = f"Created {created} PPM record(s) across {len(selected_months)} month(s)."
             if skipped:
@@ -1242,12 +1220,6 @@ def render_ppm_generator(db: Database):
         all_ppms = db.fetch("ppm_schedule")
         selected_month_keys = {f"{year_sel}-{m:02d}" for m in selected_months}
 
-        asset_by_code = {}
-        for a in all_assets:
-            code = (a.get("asset_code") or "").strip()
-            if code:
-                asset_by_code[code] = a
-
         monthly = []
         for p in all_ppms:
             if (p.get("planned_date") or "")[:7] not in selected_month_keys:
@@ -1256,19 +1228,13 @@ def render_ppm_generator(db: Database):
                 continue
             if venue_sel and (p.get("venue") or "") != venue_sel:
                 continue
-            if asset_sel:
-                a = asset_by_code.get((p.get("asset_code") or "").strip())
-                if a is None or (a.get("asset_name") or "").strip() != asset_sel:
-                    continue
-            if location_sel:
-                a = asset_by_code.get((p.get("asset_code") or "").strip())
-                if a is None or (a.get("location") or "").strip() != location_sel:
-                    continue
+            if asset_sel and (p.get("asset_name") or "").strip() != asset_sel:
+                continue
             monthly.append(p)
 
         monthly.sort(key=lambda p: (
             p.get("planned_date") or "",
-            p.get("asset_code") or "",
+            p.get("asset_name") or "",
         ))
 
         month_label = ", ".join(month_short[m - 1] for m in sorted(selected_months))
@@ -1278,8 +1244,9 @@ def render_ppm_generator(db: Database):
 
         if monthly:
             cols_to_show = [
-                "ppm_no", "asset_code", "contract_no", "venue",
-                "task", "frequency", "planned_date", "status", "qty",
+                "ppm_no", "asset_name", "contract_no", "venue",
+                "task", "frequency", "planned_date", "status",
+                "current_ppm", "last_done", "next_due", "qty",
             ]
             df = pd.DataFrame(
                 [{c: p.get(c) for c in cols_to_show} for p in monthly]
@@ -1288,7 +1255,6 @@ def render_ppm_generator(db: Database):
         else:
             st.info("No PPMs match the current filter for the selected months.")
 
-        # Per-month breakdown
         st.markdown("##### Breakdown by month")
         breakdown = []
         for m in sorted(selected_months):
@@ -1323,14 +1289,11 @@ def render_ppm_generator(db: Database):
             scope_bits.append(f"venue: {venue_sel}")
         if asset_sel:
             scope_bits.append(f"asset: {asset_sel}")
-        if location_sel:
-            scope_bits.append(f"location: {location_sel}")
         st.caption(f"{len(filtered_assets)} asset(s) — " + " · ".join(scope_bits))
         if filtered_assets:
             asset_cols = [
                 c for c in (
-                    "asset_code", "asset_name", "category",
-                    "location", "venue", "contract_no", "status",
+                    "asset_name", "category", "venue", "contract_no", "status",
                 )
                 if any(c in a for a in filtered_assets)
             ]
@@ -1343,6 +1306,7 @@ def render_ppm_generator(db: Database):
                 "No assets match the current filters. "
                 "Open **Asset Register** and set Contract No. / Venue on each asset."
             )
+
 # ---------------------------------------------------------------------------
 # App shell
 # ---------------------------------------------------------------------------
