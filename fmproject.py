@@ -923,7 +923,7 @@ def render_stock_balance(db: Database):
 # ---------------------------------------------------------------------------
 def render_ppm_generator(db: Database):
     st.subheader("PPM Generator")
-    st.caption("Generate and view PPMs filtered by contract, venue, asset and location.")
+    st.caption("Generate and view PPMs by contract, venue, asset, location and month.")
 
     if "ppm_reset_counter" not in st.session_state:
         st.session_state.ppm_reset_counter = 0
@@ -980,7 +980,7 @@ def render_ppm_generator(db: Database):
             st.session_state.ppm_reset_counter += 1
             st.rerun()
 
-    # ---------- apply venue filter ----------
+    # ---------- venue filter ----------
     if venue_sel:
         stage_assets = [
             a for a in contract_assets
@@ -1037,10 +1037,46 @@ def render_ppm_generator(db: Database):
     with col_f:
         freq = st.selectbox(
             "Frequency",
-            ["", "Q", "Q,Y", "Q,HY,Y", "HY",
-             "Y", "CM Only"],
+            ["", "Daily", "Weekly", "Monthly", "Quarterly",
+             "Semi-Annual", "Annual", "Bi-Annual"],
             key=f"ppm_freq_sel_{counter}",
         )
+
+    # ---------- month selection (checkboxes) ----------
+    st.markdown("#### Months")
+    current_year = datetime.now().year
+    current_month = datetime.now().month
+
+    year_sel = st.selectbox(
+        "Year",
+        [current_year - 1, current_year, current_year + 1],
+        index=1,
+        key="ppm_year_sel",
+    )
+
+    month_short = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    selected_months: list[int] = []
+    for row_start in range(0, 12, 6):
+        month_cols = st.columns(6)
+        for offset in range(6):
+            m_idx = row_start + offset
+            if m_idx >= 12:
+                break
+            month_num = m_idx + 1
+            default_checked = (year_sel == current_year and month_num == current_month)
+            with month_cols[offset]:
+                checked = st.checkbox(
+                    month_short[m_idx],
+                    value=default_checked,
+                    key=f"ppm_month_{year_sel}_{month_num}",
+                )
+                if checked:
+                    selected_months.append(month_num)
+
+    if not selected_months:
+        st.warning("Select at least one month.")
 
     # ---------- save now ----------
     st.write("")
@@ -1051,15 +1087,14 @@ def render_ppm_generator(db: Database):
             st.error("Select a contract first.")
         elif not freq:
             st.error("Select a frequency.")
+        elif not selected_months:
+            st.error("Select at least one month.")
         elif not filtered_assets:
-            st.error("No assets match the current filters. "
-                     "Assign assets to this contract in **Asset Register** first.")
+            st.error(
+                "No assets match the current filters. "
+                "Assign assets to this contract in **Asset Register** first."
+            )
         else:
-            today = datetime.now()
-            planned = today.strftime("%Y-%m-%d")
-            month_key = today.strftime("%Y-%m")
-            created = 0
-            skipped = 0
             existing_ppms = db.fetch("ppm_schedule")
             existing_set = {
                 (
@@ -1070,81 +1105,89 @@ def render_ppm_generator(db: Database):
                 )
                 for p in existing_ppms
             }
-            for a in filtered_assets:
-                asset_code = (a.get("asset_code") or "").strip()
-                venue_val = venue_sel or (a.get("venue") or a.get("location") or "").strip()
-                dedup_key = (asset_code, contract_no, venue_val, month_key)
-                if dedup_key in existing_set:
-                    skipped += 1
-                    continue
-                record = {
-                    "ppm_no": f"PPM-{asset_code}-{month_key}",
-                    "asset_code": asset_code,
-                    "contract_no": contract_no,
-                    "venue": venue_val,
-                    "task": f"PPM for {a.get('asset_name') or asset_code}",
-                    "frequency": freq,
-                    "planned_date": planned,
-                    "status": "Scheduled",
-                    "qty": 1,
-                }
-                db.insert("ppm_schedule", record)
-                created += 1
-                existing_set.add(dedup_key)
-            msg = f"Created {created} PPM record(s)."
+            created = 0
+            skipped = 0
+
+            for month_num in selected_months:
+                month_key = f"{year_sel}-{month_num:02d}"
+                if year_sel == current_year and month_num == current_month:
+                    planned = datetime.now().strftime("%Y-%m-%d")
+                else:
+                    planned = f"{year_sel}-{month_num:02d}-01"
+
+                for a in filtered_assets:
+                    asset_code = (a.get("asset_code") or "").strip()
+                    venue_val = venue_sel or (a.get("venue") or a.get("location") or "").strip()
+                    dedup_key = (asset_code, contract_no, venue_val, month_key)
+                    if dedup_key in existing_set:
+                        skipped += 1
+                        continue
+                    record = {
+                        "ppm_no": f"PPM-{asset_code}-{month_key}",
+                        "asset_code": asset_code,
+                        "contract_no": contract_no,
+                        "venue": venue_val,
+                        "task": f"PPM for {a.get('asset_name') or asset_code}",
+                        "frequency": freq,
+                        "planned_date": planned,
+                        "status": "Scheduled",
+                        "qty": 1,
+                    }
+                    db.insert("ppm_schedule", record)
+                    created += 1
+                    existing_set.add(dedup_key)
+
+            msg = f"Created {created} PPM record(s) across {len(selected_months)} month(s)."
             if skipped:
-                msg += f" Skipped {skipped} that already exist for this month."
+                msg += f" Skipped {skipped} already-existing PPM(s)."
             st.success(msg)
             st.rerun()
 
-    # ---------- current month PPMs ----------
+    # ---------- display PPMs for selected months ----------
     st.divider()
-    show_current = st.checkbox(
-        "Show current month PPMs", value=True, key="ppm_show_current"
+    show_ppms = st.checkbox(
+        "Show PPMs for selected months",
+        value=True,
+        key="ppm_show_ppms",
     )
-    if show_current:
-        current_month = datetime.now().strftime("%Y-%m")
-        all_ppms = db.fetch("ppm_schedule")
-        monthly = [
-            p for p in all_ppms
-            if (p.get("planned_date") or "")[:7] == current_month
-        ]
-        if contract_no:
-            monthly = [
-                p for p in monthly
-                if (p.get("contract_no") or "") == contract_no
-            ]
-        if venue_sel:
-            monthly = [
-                p for p in monthly
-                if (p.get("venue") or "") == venue_sel
-            ]
-        if asset_sel:
-            monthly = [
-                p for p in monthly
-                if (
-                    next(
-                        (
-                            (a.get("asset_code") or "")
-                            for a in all_assets
-                            if (a.get("asset_name") or "").strip() == asset_sel
-                            and (a.get("asset_code") or "") == (p.get("asset_code") or "")
-                        ),
-                        "",
-                    )
-                )
-            ]
-        if location_sel:
-            monthly = [
-                p for p in monthly
-                if any(
-                    (a.get("asset_code") or "") == (p.get("asset_code") or "")
-                    and (a.get("location") or "").strip() == location_sel
-                    for a in all_assets
-                )
-            ]
 
-        st.markdown(f"#### Current month ({current_month}) — {len(monthly)} PPM(s)")
+    if show_ppms and selected_months:
+        all_ppms = db.fetch("ppm_schedule")
+        selected_month_keys = {f"{year_sel}-{m:02d}" for m in selected_months}
+
+        asset_by_code = {}
+        for a in all_assets:
+            code = (a.get("asset_code") or "").strip()
+            if code:
+                asset_by_code[code] = a
+
+        monthly = []
+        for p in all_ppms:
+            if (p.get("planned_date") or "")[:7] not in selected_month_keys:
+                continue
+            if contract_no and (p.get("contract_no") or "") != contract_no:
+                continue
+            if venue_sel and (p.get("venue") or "") != venue_sel:
+                continue
+            if asset_sel:
+                a = asset_by_code.get((p.get("asset_code") or "").strip())
+                if a is None or (a.get("asset_name") or "").strip() != asset_sel:
+                    continue
+            if location_sel:
+                a = asset_by_code.get((p.get("asset_code") or "").strip())
+                if a is None or (a.get("location") or "").strip() != location_sel:
+                    continue
+            monthly.append(p)
+
+        monthly.sort(key=lambda p: (
+            p.get("planned_date") or "",
+            p.get("asset_code") or "",
+        ))
+
+        month_label = ", ".join(month_short[m - 1] for m in sorted(selected_months))
+        st.markdown(
+            f"#### PPMs — {year_sel} ({month_label}) — {len(monthly)} record(s)"
+        )
 
         if monthly:
             cols_to_show = [
@@ -1156,12 +1199,31 @@ def render_ppm_generator(db: Database):
             )
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
-            st.info("No PPMs match the current filter for this month.")
+            st.info("No PPMs match the current filter for the selected months.")
 
+        # Per-month breakdown
+        st.markdown("##### Breakdown by month")
+        breakdown = []
+        for m in sorted(selected_months):
+            month_key = f"{year_sel}-{m:02d}"
+            in_month = [
+                p for p in monthly
+                if (p.get("planned_date") or "")[:7] == month_key
+            ]
+            breakdown.append({
+                "Month": f"{month_short[m-1]} {year_sel}",
+                "Records": len(in_month),
+                "Quantity": sum((p.get("qty") or 1) for p in in_month),
+            })
+        st.dataframe(pd.DataFrame(breakdown), use_container_width=True, hide_index=True)
+
+        total_records = len(monthly)
         total_qty = sum((p.get("qty") or 1) for p in monthly)
         c1, c2 = st.columns(2)
-        c1.metric("Total PPM records", len(monthly))
+        c1.metric("Total PPM records", total_records)
         c2.metric("Total quantity", total_qty)
+    elif show_ppms:
+        st.info("Select at least one month above to see PPMs.")
 
     # ---------- assets under contract ----------
     st.divider()
@@ -1194,7 +1256,6 @@ def render_ppm_generator(db: Database):
                 "No assets match the current filters. "
                 "Open **Asset Register** and set Contract No. / Venue on each asset."
             )
-
 # ---------------------------------------------------------------------------
 # App shell
 # ---------------------------------------------------------------------------
