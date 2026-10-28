@@ -503,8 +503,7 @@ MODULES = [
             T("contract_no", "Contract No.", 120),
             T("venue", "Venue", 130),
             T("task", "Task / Activity", 240),
-            C("frequency", "Frequency", ["Q", "Q,Y", "Q,HY,Y", "HY",
-                                          "Y", "CM Only"], 110),
+            C("frequency", "Frequency", ["Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"], 130),
             D("planned_date", "Planned"), D("last_done", "Last Done"),
             D("next_due", "Next Due"), T("assigned_to", "Assigned To", 130),
             C("status", "Status", ["Scheduled", "In Progress", "Completed", "Overdue", "Skipped"], 120),
@@ -1034,11 +1033,10 @@ def render_ppm_generator(db: Database):
     else:
         filtered_assets = stage_assets2
 
-    with col_f:
+     with col_f:
         freq = st.selectbox(
             "Frequency",
-            ["", "Daily", "Weekly", "Monthly", "Quarterly",
-             "Semi-Annual", "Annual", "Bi-Annual"],
+            ["", "Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"],
             key=f"ppm_freq_sel_{counter}",
         )
 
