@@ -1033,7 +1033,7 @@ def render_ppm_generator(db: Database):
     else:
         filtered_assets = stage_assets2
 
-     with col_f:
+    with col_f:
         freq = st.selectbox(
             "Frequency",
             ["", "Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"],
