@@ -904,71 +904,53 @@ def render_stock_balance(db: Database):
 # ---------------------------------------------------------------------------
 # PPM Generator page
 # ---------------------------------------------------------------------------
-def _cycle_label(frequency: str, month_num: int, is_current_month: bool = False) -> str:
-    """Return a cycle label like 'Q2', 'Q1+H1+Y', 'H1', 'Y', 'CM Only'."""
-    if not frequency or not month_num:
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _month_abbr(date_str) -> str:
+    """Return 'Oct' for '2025-10-01'; blank on empty or malformed input."""
+    if not date_str or len(str(date_str)) < 7:
         return ""
-    freq = frequency.strip().upper()
-    comps = [c.strip() for c in freq.split(",")]
-    parts = []
-    quarter = (month_num - 1) // 3 + 1
-    half = (month_num - 1) // 6 + 1
-
-    if "Q" in comps:
-        parts.append(f"Q{quarter}")
-    if "HY" in comps:
-        parts.append(f"H{half}")
-    if "Y" in comps:
-        if month_num == 1 or not parts:
-            parts.append("Y")
-
-    if not parts:
-        label = "CM Only" if freq == "CM ONLY" else frequency
-    else:
-        label = "+".join(parts)
-
-    if is_current_month:
-        label += " ★"
-    return label
+    try:
+        month_num = int(str(date_str)[5:7])
+        if 1 <= month_num <= 12:
+            return _MONTH_ABBR[month_num - 1]
+    except (ValueError, IndexError):
+        pass
+    return ""
 
 
-def _update_ppm_schedule_fields(db, asset_code, contract_no, venue):
-    """Recompute last_done, next_due and current_ppm for all PPMs of one asset."""
+def _update_ppm_schedule_fields(db, asset_name, contract_no, venue):
+    """Recompute last_done, next_due and current_ppm for all PPMs of one asset.
+
+    Each field stores only the month abbreviation (e.g. 'Oct') — the year and
+    day are visible in the Planned column if needed for context.
+    """
     rows = db.execute(
         "SELECT * FROM ppm_schedule "
-        "WHERE asset_code = ? AND contract_no = ? AND venue = ? "
+        "WHERE asset_name = ? AND contract_no = ? AND venue = ? "
         "ORDER BY planned_date",
-        (asset_code or "", contract_no or "", venue or ""),
+        (asset_name or "", contract_no or "", venue or ""),
     ).fetchall()
 
     if not rows:
         return
 
-    current_month_key = datetime.now().strftime("%Y-%m")
-
     for i, p in enumerate(rows):
-        last_done = (rows[i - 1].get("planned_date") or "") if i > 0 else ""
-        next_due = (rows[i + 1].get("planned_date") or "") if i < len(rows) - 1 else ""
-
-        freq = p.get("frequency") or ""
-        planned = p.get("planned_date") or ""
-        try:
-            month_num = int(planned[5:7]) if len(planned) >= 7 else 0
-        except (ValueError, IndexError):
-            month_num = 0
-
-        is_current = planned[:7] == current_month_key
-        label = _cycle_label(freq, month_num, is_current)
+        last_done = _month_abbr(rows[i - 1].get("planned_date") or "") if i > 0 else ""
+        next_due = _month_abbr(rows[i + 1].get("planned_date") or "") if i < len(rows) - 1 else ""
+        current = _month_abbr(p.get("planned_date") or "")
 
         if (
             (p.get("last_done") or "") != last_done
             or (p.get("next_due") or "") != next_due
-            or (p.get("current_ppm") or "") != label
+            or (p.get("current_ppm") or "") != current
         ):
             db.update("ppm_schedule", p["id"], {
                 "last_done": last_done,
                 "next_due": next_due,
-                "current_ppm": label,
+                "current_ppm": current,
             })
 
 
