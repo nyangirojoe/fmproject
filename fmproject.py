@@ -487,7 +487,6 @@ MODULES = [
             T("asset_name", "Asset Name", 180),
             T("contract_no", "Contract No.", 120),
             T("venue", "Venue", 130),
-            T("task", "Task / Activity", 240),
             C("frequency", "Frequency", ["Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"], 130),
             D("planned_date", "Planned"), D("last_done", "Last Done"),
             D("next_due", "Next Due"), T("current_ppm", "Current PPM", 140),
@@ -1179,7 +1178,6 @@ def render_ppm_generator(db: Database):
                         "asset_name": asset_name,
                         "contract_no": contract_no,
                         "venue": venue_val,
-                        "task": f"PPM for {asset_name}",
                         "frequency": freq,
                         "planned_date": planned,
                         "status": "Scheduled",
@@ -1245,7 +1243,7 @@ def render_ppm_generator(db: Database):
         if monthly:
             cols_to_show = [
                 "ppm_no", "asset_name", "contract_no", "venue",
-                "task", "frequency", "planned_date", "status",
+                "frequency", "planned_date", "status",
                 "current_ppm", "last_done", "next_due", "qty",
             ]
             df = pd.DataFrame(
