@@ -1307,6 +1307,253 @@ def render_ppm_generator(db: Database):
                 "Open **Asset Register** and set Contract No. / Venue on each asset."
             )
 
+def render_ppm_dashboard(db: Database):
+    st.subheader("PPM Dashboard")
+    st.caption("At-a-glance PPM status by contract, venue and month.")
+
+    contracts = db.fetch("contracts")
+    contract_nos = sorted({
+        (c.get("contract_no") or "").strip()
+        for c in contracts
+        if (c.get("contract_no") or "").strip()
+    })
+
+    all_assets = db.fetch("asset_register")
+    all_ppms = db.fetch("ppm_schedule")
+    current_year = datetime.now().year
+    current_month = datetime.now().month
+    current_month_key = f"{current_year}-{current_month:02d}"
+
+    col_a, col_b, col_c = st.columns([2, 2, 1])
+    with col_a:
+        contract_no = st.selectbox(
+            "Contract", [""] + contract_nos, key="dash_contract"
+        )
+    with col_b:
+        if contract_no:
+            contract_assets = [
+                a for a in all_assets if (a.get("contract_no") or "") == contract_no
+            ]
+        else:
+            contract_assets = all_assets
+        venues = sorted({
+            (a.get("venue") or "").strip()
+            for a in contract_assets
+            if (a.get("venue") or "").strip()
+        })
+        venue_sel = st.selectbox("Venue", [""] + venues, key="dash_venue")
+    with col_c:
+        year_sel = st.selectbox(
+            "Year",
+            [current_year - 1, current_year, current_year + 1],
+            index=1,
+            key="dash_year",
+        )
+
+    if not contract_no:
+        st.info("Select a contract to view its PPM dashboard.")
+        return
+
+    # Filter PPMs to this contract / venue / year
+    year_ppms = [
+        p for p in all_ppms
+        if (p.get("contract_no") or "") == contract_no
+        and (p.get("planned_date") or "")[:4] == str(year_sel)
+    ]
+    if venue_sel:
+        year_ppms = [
+            p for p in year_ppms if (p.get("venue") or "").strip() == venue_sel
+        ]
+
+    # ---------- summary metrics ----------
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    this_month_ppms = [
+        p for p in year_ppms
+        if (p.get("planned_date") or "")[:7] == current_month_key
+    ] if year_sel == current_year else []
+
+    completed_this_month = sum(
+        1 for p in this_month_ppms if (p.get("status") or "") == "Completed"
+    )
+    overdue = sum(
+        1 for p in year_ppms
+        if (p.get("planned_date") or "") < today_str
+        and (p.get("status") or "") != "Completed"
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total PPMs this year", len(year_ppms))
+    m2.metric("This month", len(this_month_ppms))
+    m3.metric("Completed this month", completed_this_month)
+    m4.metric("Overdue", overdue)
+
+    st.divider()
+
+    tab_month, tab_year = st.tabs(["📅 Single month", "📊 Year matrix"])
+
+    # ---------- tab 1: single month ----------
+    with tab_month:
+        month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        default_idx = current_month - 1 if year_sel == current_year else 0
+        month_idx = st.selectbox(
+            "Month",
+            range(12),
+            index=default_idx,
+            format_func=lambda i: month_labels[i],
+            key="dash_month",
+        )
+        month_num = month_idx + 1
+        month_key = f"{year_sel}-{month_num:02d}"
+
+        month_ppms = [
+            p for p in year_ppms
+            if (p.get("planned_date") or "")[:7] == month_key
+        ]
+        month_ppms.sort(key=lambda p: (
+            (p.get("venue") or ""),
+            (p.get("asset_name") or ""),
+        ))
+
+        status_filter = st.radio(
+            "Status filter",
+            ["All", "Pending", "Completed", "Overdue"],
+            horizontal=True,
+            key="dash_status",
+        )
+        if status_filter == "Completed":
+            month_ppms = [
+                p for p in month_ppms if (p.get("status") or "") == "Completed"
+            ]
+        elif status_filter == "Pending":
+            month_ppms = [
+                p for p in month_ppms if (p.get("status") or "") != "Completed"
+            ]
+        elif status_filter == "Overdue":
+            month_ppms = [
+                p for p in month_ppms
+                if (p.get("planned_date") or "") < today_str
+                and (p.get("status") or "") != "Completed"
+            ]
+
+        # Per-venue summary when no venue is selected
+        if not venue_sel and month_ppms:
+            st.markdown("##### Per-venue breakdown")
+            venue_summary = {}
+            for p in month_ppms:
+                v = (p.get("venue") or "").strip() or "—"
+                if v not in venue_summary:
+                    venue_summary[v] = {
+                        "Venue": v,
+                        "Assets": set(),
+                        "Completed": 0,
+                        "Pending": 0,
+                        "Overdue": 0,
+                    }
+                venue_summary[v]["Assets"].add((p.get("asset_name") or "").strip())
+                if (p.get("status") or "") == "Completed":
+                    venue_summary[v]["Completed"] += 1
+                elif (p.get("planned_date") or "") < today_str:
+                    venue_summary[v]["Overdue"] += 1
+                else:
+                    venue_summary[v]["Pending"] += 1
+            summary_rows = []
+            for v in sorted(venue_summary.keys()):
+                info = venue_summary[v]
+                summary_rows.append({
+                    "Venue": v,
+                    "Assets": len(info["Assets"]),
+                    "Completed": info["Completed"],
+                    "Pending": info["Pending"],
+                    "Overdue": info["Overdue"],
+                })
+            st.dataframe(
+                pd.DataFrame(summary_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.markdown(f"##### {month_labels[month_idx]} {year_sel} — {len(month_ppms)} PPM(s)")
+
+        if month_ppms:
+            rows = []
+            for p in month_ppms:
+                rows.append({
+                    "Asset": p.get("asset_name") or "",
+                    "Venue": p.get("venue") or "",
+                    "Frequency": p.get("frequency") or "",
+                    "Planned": p.get("planned_date") or "",
+                    "Last Done": p.get("last_done") or "—",
+                    "Next Due": p.get("next_due") or "—",
+                    "Current PPM": p.get("current_ppm") or "",
+                    "Status": p.get("status") or "",
+                })
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No PPMs match this month with the current filters.")
+
+    # ---------- tab 2: year matrix ----------
+    with tab_year:
+        month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        matrix_assets = sorted({
+            (p.get("asset_name") or "").strip()
+            for p in year_ppms
+            if (p.get("asset_name") or "").strip()
+        })
+
+        if not matrix_assets:
+            st.info("No PPMs for this contract in the selected year.")
+        else:
+            matrix_rows = []
+            for asset in matrix_assets:
+                asset_ppms = [
+                    p for p in year_ppms
+                    if (p.get("asset_name") or "").strip() == asset
+                ]
+                row = {"Asset": asset}
+                if not venue_sel:
+                    asset_venue = (
+                        (asset_ppms[0].get("venue") or "").strip()
+                        if asset_ppms else ""
+                    )
+                    row["Venue"] = asset_venue or "—"
+                for m in range(1, 13):
+                    mk = f"{year_sel}-{m:02d}"
+                    in_month = [
+                        p for p in asset_ppms
+                        if (p.get("planned_date") or "")[:7] == mk
+                    ]
+                    if not in_month:
+                        row[month_labels[m - 1]] = ""
+                        continue
+                    statuses = {(p.get("status") or "") for p in in_month}
+                    if "Completed" in statuses:
+                        row[month_labels[m - 1]] = "✓"
+                    elif (
+                        year_sel == current_year and m == current_month
+                    ):
+                        row[month_labels[m - 1]] = "★"
+                    elif any(
+                        (p.get("planned_date") or "") < today_str
+                        for p in in_month
+                    ):
+                        row[month_labels[m - 1]] = "⚠"
+                    else:
+                        row[month_labels[m - 1]] = "○"
+                matrix_rows.append(row)
+
+            st.dataframe(
+                pd.DataFrame(matrix_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption("✓ Completed   ★ Due this month   ⚠ Overdue   ○ Scheduled")
+
 # ---------------------------------------------------------------------------
 # App shell
 # ---------------------------------------------------------------------------
@@ -1341,6 +1588,7 @@ def main():
     ppm_label = next(m["name"] for m in MODULES if m["table"] == "ppm_schedule")
     ppm_pos = tab_labels.index(ppm_label)
     tab_labels.insert(ppm_pos + 1, "PPM Generator")
+    tab_labels.insert(ppm_pos + 2, "PPM Dashboard")
 
     with st.sidebar:
         st.header("Modules")
@@ -1354,10 +1602,11 @@ def main():
         render_stock_balance(db)
     elif selected_tab == "PPM Generator":
         render_ppm_generator(db)
+    elif selected_tab == "PPM Dashboard":
+        render_ppm_dashboard(db)
     else:
         module = next(m for m in MODULES if m["name"] == selected_tab)
         render_module(module, db)
-
 
 if __name__ == "__main__":
     main()
