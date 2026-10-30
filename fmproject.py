@@ -1546,7 +1546,7 @@ def render_ppm_dashboard(db: Database):
         else:
             st.info("No PPMs match this month with the current filters.")
 
-    # ---------- tab 2: year matrix ----------
+    # ---------- tab 2: distribution + year matrix ----------
     with tab_year:
         month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -1556,9 +1556,56 @@ def render_ppm_dashboard(db: Database):
             if (p.get("asset_name") or "").strip()
         })
 
+        scope = contract_no
+        if venue_sel:
+            scope += f" · {venue_sel}"
+
         if not matrix_assets:
-            st.info("No PPMs for this contract in the selected year.")
+            st.info(f"No PPMs for {scope} in {year_sel}.")
         else:
+            # --- monthly distribution ---
+            st.markdown(f"##### Distribution — {scope} — {year_sel}")
+
+            counts = {m: 0 for m in range(1, 13)}
+            completed_counts = {m: 0 for m in range(1, 13)}
+            for p in year_ppms:
+                pd_str = p.get("planned_date") or ""
+                if len(pd_str) < 7:
+                    continue
+                try:
+                    m = int(pd_str[5:7])
+                except ValueError:
+                    continue
+                if 1 <= m <= 12:
+                    counts[m] += 1
+                    if (p.get("status") or "") == "Completed":
+                        completed_counts[m] += 1
+
+            dist_rows = [
+                {
+                    "Month": month_labels[m - 1],
+                    "Total PPMs": counts[m],
+                    "Completed": completed_counts[m],
+                    "Outstanding": counts[m] - completed_counts[m],
+                }
+                for m in range(1, 13)
+            ]
+            st.dataframe(
+                pd.DataFrame(dist_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            chart_df = pd.DataFrame(
+                {"PPMs": [counts[m] for m in range(1, 13)]},
+                index=month_labels,
+            )
+            st.bar_chart(chart_df, use_container_width=True)
+
+            st.divider()
+
+            # --- asset × month matrix ---
+            st.markdown("##### Asset × month matrix")
             matrix_rows = []
             for asset in matrix_assets:
                 asset_ppms = [
@@ -1584,9 +1631,7 @@ def render_ppm_dashboard(db: Database):
                     statuses = {(p.get("status") or "") for p in in_month}
                     if "Completed" in statuses:
                         row[month_labels[m - 1]] = "✓"
-                    elif (
-                        year_sel == current_year and m == current_month
-                    ):
+                    elif year_sel == current_year and m == current_month:
                         row[month_labels[m - 1]] = "★"
                     elif any(
                         (p.get("planned_date") or "") < today_str
@@ -1597,13 +1642,22 @@ def render_ppm_dashboard(db: Database):
                         row[month_labels[m - 1]] = "○"
                 matrix_rows.append(row)
 
+            # --- totals row ---
+            totals_row = {"Asset": "— TOTAL —"}
+            if not venue_sel:
+                totals_row["Venue"] = ""
+            for m in range(1, 13):
+                totals_row[month_labels[m - 1]] = (
+                    str(counts[m]) if counts[m] else ""
+                )
+            matrix_rows.append(totals_row)
+
             st.dataframe(
                 pd.DataFrame(matrix_rows),
                 use_container_width=True,
                 hide_index=True,
             )
             st.caption("✓ Completed   ★ Due this month   ⚠ Overdue   ○ Scheduled")
-
 # ---------------------------------------------------------------------------
 # App shell
 # ---------------------------------------------------------------------------
