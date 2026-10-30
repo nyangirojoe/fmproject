@@ -41,9 +41,16 @@ def H(col):
 def HN(col):
     return {"col": col, "label": col, "kind": "number", "width": 90, "hidden": True}
     
-def AS(col, label, width=220):
-    """Asset-name selector: dropdown of existing names + 'enter new' option."""
-    return {"col": col, "label": label, "kind": "asset_select", "width": width}
+def AS(col, label, source_table="asset_register", source_col=None, width=150):
+    """Selector: dropdown of existing values from a source table + 'enter new' option."""
+    return {
+        "col": col,
+        "label": label,
+        "kind": "existing_select",
+        "source_table": source_table,
+        "source_col": source_col or col,
+        "width": width,
+    }
 
 # ---------------------------------------------------------------------------
 # Auto-calculations
@@ -467,13 +474,12 @@ MODULES = [
         "name": "Asset Register",
         "table": "asset_register",
         "fields": [
-            AS("asset_name", "Asset Name", 220),
+            AS("asset_name", "Asset Name", width=220),
             C("category", "Category", ["Room Management", "Fire Alarm"], 150),
             N("qty", "Qty", 70),
             C("status", "Status", ["Active", "Under Maintenance", "Out of Service", "Retired"], 130),
-            T("contract_no", "Contract No.", 120),
-            T("venue", "Venue", 130),
-            T("remarks", "Remarks", 200),
+            AS("contract_no", "Contract No.", "contracts", "contract_no", 120),
+            AS("venue", "Venue", "asset_register", "venue", 130),
         ],
     },
     {
@@ -495,8 +501,8 @@ MODULES = [
         "fields": [
             T("ppm_no", "PPM No.", 110),
             T("asset_name", "Asset Name", 180),
-            T("contract_no", "Contract No.", 120),
-            T("venue", "Venue", 130),
+            AS("contract_no", "Contract No.", "contracts", "contract_no", 120),
+            AS("venue", "Venue", "asset_register", "venue", 130),
             C("frequency", "Frequency", ["Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"], 130),
             D("planned_date", "Planned"), D("last_done", "Last Done"),
             D("next_due", "Next Due"), T("current_ppm", "Current PPM", 140),
@@ -623,15 +629,15 @@ def render_form_inputs(
                     f["label"], opts, index=idx, key=key
                 ) or None
 
-            elif f["kind"] == "asset_select":
+            elif f["kind"] == "existing_select":
                 existing: list[str] = []
                 if db is not None:
                     try:
-                        all_assets = db.fetch("asset_register")
+                        src_rows = db.fetch(f["source_table"])
                         existing = sorted({
-                            (a.get("asset_name") or "").strip()
-                            for a in all_assets
-                            if (a.get("asset_name") or "").strip()
+                            (r.get(f["source_col"]) or "").strip()
+                            for r in src_rows
+                            if (r.get(f["source_col"]) or "").strip()
                         })
                     except Exception:
                         existing = []
@@ -639,24 +645,19 @@ def render_form_inputs(
                 if current and current not in existing:
                     existing = [current] + existing
 
-                NEW_OPT = "➕ Enter new name…"
+                NEW_OPT = "➕ Enter new…"
                 options = [""] + existing + [NEW_OPT]
-                if current and current in options:
-                    idx = options.index(current)
-                else:
-                    idx = 0
+                idx = options.index(current) if current in options else 0
 
-                sel = st.selectbox(
-                    f["label"], options, index=idx, key=key
-                )
+                sel = st.selectbox(f["label"], options, index=idx, key=key)
 
                 if sel == NEW_OPT:
-                    new_name = st.text_input(
-                        f"{f['label']} — new name",
+                    new_val = st.text_input(
+                        f"{f['label']} — new value",
                         value="",
                         key=key + "_new",
                     ).strip()
-                    data[f["col"]] = new_name or None
+                    data[f["col"]] = new_val or None
                 else:
                     data[f["col"]] = sel or None
 
