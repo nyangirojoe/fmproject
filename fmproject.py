@@ -63,7 +63,13 @@ def auto_sv(data):
 # ---------------------------------------------------------------------------
 # Database (Turso / libsql via SQLAlchemy)
 # ---------------------------------------------------------------------------
-SQL_TYPE = {"text": "TEXT", "number": "REAL", "date": "TEXT", "choice": "TEXT"}
+SQL_TYPE = {
+    "text": "TEXT",
+    "number": "REAL",
+    "date": "TEXT",
+    "choice": "TEXT",
+    "existing_select": "TEXT",
+}
 
 from turso_serverless import connect
 
