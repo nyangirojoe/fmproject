@@ -1374,7 +1374,7 @@ def render_ppm_dashboard(db: Database):
     current_month = datetime.now().month
     current_month_key = f"{current_year}-{current_month:02d}"
 
-    col_a, col_b, col_c = st.columns([2, 2, 1])
+    col_a, col_b = st.columns([2, 2])
     with col_a:
         contract_no = st.selectbox(
             "Contract", [""] + contract_nos, key="dash_contract"
@@ -1392,13 +1392,9 @@ def render_ppm_dashboard(db: Database):
             if (a.get("venue") or "").strip()
         })
         venue_sel = st.selectbox("Venue", [""] + venues, key="dash_venue")
-    with col_c:
-        year_sel = st.selectbox(
-            "Year",
-            [current_year - 1, current_year, current_year + 1],
-            index=1,
-            key="dash_year",
-        )
+
+    # Year is fixed to the current year — the PPM pattern repeats annually.
+    year_sel = current_year
 
     if not contract_no:
         st.info("Select a contract to view its PPM dashboard.")
