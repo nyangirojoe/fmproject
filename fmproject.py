@@ -337,7 +337,6 @@ def _refresh_pbf_status(db, borrow_no):
         (status, pbf["id"]),
     )
 
-
 def pbf_pre_save(db, data, record_id):
     if not data.get("part_no"):
         return False, "Part No. is required."
@@ -357,20 +356,23 @@ def pbf_pre_save(db, data, record_id):
 
 
 def pbf_post_save(db, record_id, data, is_new):
+    """Create (or refresh) the auto-issued Stock Voucher for this PBF."""
     if not is_new:
-        return
-    borrow_no = data.get("borrow_no") or f"PBF-{record_id}"
+        _delete_auto_sv(db, "pbf_part_borrowing", record_id)
+
+    borrow_no = (data.get("borrow_no") or f"PBF-{record_id}").strip()
+
     _create_auto_sv(
         db,
         vtype="Issue",
-        when=data.get("borrow_date"),
-        part_no=data.get("part_no"),
+        when=datetime.now().strftime("%Y-%m-%d"),
+        part_no=(data.get("task_no") or borrow_no),
         description=data.get("description"),
         qty=data.get("qty"),
-        uom=data.get("uom"),
-        store=data.get("source") or "Main Store",
-        issued_to=data.get("issued_to"),
-        remarks=f"Auto-issue for borrowing {borrow_no}",
+        uom=None,
+        store="Main Store",
+        issued_to=None,
+        remarks=(data.get("remarks") or f"Auto-issue for PBF {borrow_no}"),
         ref_table="pbf_part_borrowing",
         ref_id=record_id,
     )
@@ -516,7 +518,10 @@ MODULES = [
             N("qty", "Quantity", 90),
             T("task_no", "Task No.", 120),
             C("status", "Status", ["Open", "Returned", "Closed"], 130),
+            T("remarks", "Remarks", 220),
         ],
+        "post_save": pbf_post_save,
+        "post_delete": pbf_post_delete,
     },
     {
         "name": "PRF — Part Return",
@@ -545,6 +550,7 @@ MODULES = [
             H("ref_table"), HN("ref_id"),
         ],
         "auto": auto_sv, "pre_delete": sv_pre_delete,
+        "hidden": True,
     },
     {
         "name": "SOR — Rates",
@@ -1624,9 +1630,9 @@ def main():
         st.markdown("## LijiArts Ltd")
         st.caption("Facility Management — DB: Turso (persistent)")
 
-    tab_labels = [m["name"] for m in MODULES]
-    sv_idx = next(i for i, m in enumerate(MODULES) if m["table"] == "sv_stock_voucher")
-    tab_labels.insert(sv_idx + 1, "Stock Balance")
+    tab_labels = [m["name"] for m in MODULES if not m.get("hidden")]
+    prf_idx = tab_labels.index("PRF — Part Return")
+    tab_labels.insert(prf_idx + 1, "Stock Balance")
     ppm_label = next(m["name"] for m in MODULES if m["table"] == "ppm_schedule")
     ppm_pos = tab_labels.index(ppm_label)
     tab_labels.insert(ppm_pos + 1, "PPM Generator")
