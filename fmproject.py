@@ -648,13 +648,21 @@ def render_form_inputs(
                 options = [""] + existing
                 idx = options.index(current) if current in options else 0
 
-                data[f["col"]] = st.selectbox(
+                picked = st.selectbox(
                     f["label"],
                     options=options,
                     index=idx,
-                    accept_new_options=True,
                     key=key,
-                ) or None
+                )
+
+                typed = st.text_input(
+                    f"{f['label']} — or type a new value",
+                    value="",
+                    key=key + "_new",
+                    placeholder="leave blank to use dropdown above",
+                ).strip()
+
+                data[f["col"]] = typed or picked or None
             elif f["kind"] == "date":
                 raw = st.text_input(
                     f["label"], value=str(default or ""),
