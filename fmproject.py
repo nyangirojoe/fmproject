@@ -573,8 +573,18 @@ MODULES = [
 # ---------------------------------------------------------------------------
 # Session DB singleton
 # ---------------------------------------------------------------------------
+def _modules_fingerprint() -> str:
+    """Stable hash of every table and column in MODULES.
+    Changes whenever a field is added, removed, or re-typed."""
+    parts = []
+    for m in MODULES:
+        for f in m["fields"]:
+            parts.append(f'{m["table"]}.{f["col"]}:{f["kind"]}')
+    return "|".join(sorted(parts))
+
+
 @st.cache_resource
-def get_db() -> Database:
+def get_db(schema_fingerprint: str) -> Database:
     db = Database()
     db.create_schema(MODULES)
     return db
@@ -1592,7 +1602,7 @@ def render_ppm_dashboard(db: Database):
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
 
-    db = get_db()
+    db = get_db(_modules_fingerprint())
 
     hdr_col1, hdr_col2 = st.columns([1, 6])
     with hdr_col1:
