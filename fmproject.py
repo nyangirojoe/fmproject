@@ -645,22 +645,16 @@ def render_form_inputs(
                 if current and current not in existing:
                     existing = [current] + existing
 
-                NEW_OPT = "➕ Enter new…"
-                options = [""] + existing + [NEW_OPT]
+                options = [""] + existing
                 idx = options.index(current) if current in options else 0
 
-                sel = st.selectbox(f["label"], options, index=idx, key=key)
-
-                if sel == NEW_OPT:
-                    new_val = st.text_input(
-                        f"{f['label']} — new value",
-                        value="",
-                        key=key + "_new",
-                    ).strip()
-                    data[f["col"]] = new_val or None
-                else:
-                    data[f["col"]] = sel or None
-
+                data[f["col"]] = st.selectbox(
+                    f["label"],
+                    options=options,
+                    index=idx,
+                    accept_new_options=True,
+                    key=key,
+                ) or None
             elif f["kind"] == "date":
                 raw = st.text_input(
                     f["label"], value=str(default or ""),
