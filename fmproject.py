@@ -523,7 +523,7 @@ MODULES = [
         "post_save": pbf_post_save,
         "post_delete": pbf_post_delete,
     },
-    {
+   {
         "name": "PRF — Part Return",
         "table": "prf_part_return",
         "fields": [
@@ -535,6 +535,7 @@ MODULES = [
             T("remarks", "Remarks", 180),
         ],
         "pre_save": prf_pre_save, "post_save": prf_post_save, "post_delete": prf_post_delete,
+        "hidden": True,
     },
     {
         "name": "SV — Stock Voucher",
@@ -572,6 +573,7 @@ MODULES = [
             N("amount", "Amount", 110), T("remarks", "Remarks", 160),
         ],
         "auto": auto_boq,
+        "hidden": True,
     },
 ]
 
@@ -1631,8 +1633,6 @@ def main():
         st.caption("Facility Management — DB: Turso (persistent)")
 
     tab_labels = [m["name"] for m in MODULES if not m.get("hidden")]
-    prf_idx = tab_labels.index("PRF — Part Return")
-    tab_labels.insert(prf_idx + 1, "Stock Balance")
     ppm_label = next(m["name"] for m in MODULES if m["table"] == "ppm_schedule")
     ppm_pos = tab_labels.index(ppm_label)
     tab_labels.insert(ppm_pos + 1, "PPM Generator")
