@@ -142,7 +142,7 @@ class Database:
                 if f["col"] not in existing:
                     self._execute(
                         f'ALTER TABLE "{m["table"]}" ADD COLUMN '
-                        f'"{f["col"]}" {SQL_TYPE[f["kind"]]}'
+                        f'"{f["col"]}" {SQL_TYPE.get(f["kind"], "TEXT")}'
                     )
         self._commit()
 
