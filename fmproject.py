@@ -460,6 +460,7 @@ MODULES = [
         "fields": [
             T("asset_name", "Asset Name", 220),
             C("category", "Category", ["Room Management", "Fire Alarm"], 150),
+            N("qty", "Qty", 70),
             C("status", "Status", ["Active", "Under Maintenance", "Out of Service", "Retired"], 130),
             T("contract_no", "Contract No.", 120),
             T("venue", "Venue", 130),
@@ -1273,7 +1274,7 @@ def render_ppm_generator(db: Database):
         if filtered_assets:
             asset_cols = [
                 c for c in (
-                    "asset_name", "category", "venue", "contract_no", "status",
+                    "asset_name", "category", "qty", "venue", "contract_no", "status",
                 )
                 if any(c in a for a in filtered_assets)
             ]
