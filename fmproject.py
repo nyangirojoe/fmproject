@@ -426,9 +426,9 @@ def prf_pre_save(db, data, record_id):
             f"Return quantity ({qty:g}) exceeds outstanding "
             f"({outstanding:g}) for borrow **{borrow_no}**."
         )
-    if pbf["part_no"] and not data.get("part_no"):
+    if pbf.get("part_no") and not data.get("part_no"):
         data["part_no"] = pbf["part_no"]
-    if pbf["description"] and not data.get("description"):
+    if pbf.get("description") and not data.get("description"):
         data["description"] = pbf["description"]
     return True, ""
 
@@ -449,14 +449,10 @@ def prf_post_save(db, record_id, data, is_new):
             ref_table="prf_part_return",
             ref_id=record_id,
         )
-    _refresh_pbf_status(db, data.get("borrow_no"))
 
 
 def prf_post_delete(db, record_id, data):
     _delete_auto_sv(db, "prf_part_return", record_id)
-    if data.get("borrow_no"):
-        _refresh_pbf_status(db, data["borrow_no"])
-
 
 def sv_pre_delete(db, record_id, data):
     if data.get("ref_table"):
@@ -515,14 +511,12 @@ MODULES = [
         "name": "PBF — Part Borrowing",
         "table": "pbf_part_borrowing",
         "fields": [
-            T("borrow_no", "Borrow No.", 110), T("part_no", "Part No.", 110),
-            T("description", "Description", 200), N("qty", "Qty", 70),
-            T("uom", "UOM", 70), T("source", "Borrowed From", 150),
-            T("issued_to", "Issued To", 130), D("borrow_date", "Borrow Date"),
-            D("expected_return", "Expected Return"), T("authorised_by", "Authorised By", 130),
-            C("status", "Status", ["Open", "Partially Returned", "Returned", "Overdue"], 140),
+            T("borrow_no", "PBF No.", 120),
+            T("description", "Description", 240),
+            N("qty", "Quantity", 90),
+            T("task_no", "Task No.", 120),
+            C("status", "Status", ["Open", "Returned", "Closed"], 130),
         ],
-        "pre_save": pbf_pre_save, "post_save": pbf_post_save, "post_delete": pbf_post_delete,
     },
     {
         "name": "PRF — Part Return",
