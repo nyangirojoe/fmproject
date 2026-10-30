@@ -40,7 +40,10 @@ def H(col):
 
 def HN(col):
     return {"col": col, "label": col, "kind": "number", "width": 90, "hidden": True}
-
+    
+def AS(col, label, width=220):
+    """Asset-name selector: dropdown of existing names + 'enter new' option."""
+    return {"col": col, "label": label, "kind": "asset_select", "width": width}
 
 # ---------------------------------------------------------------------------
 # Auto-calculations
@@ -458,7 +461,7 @@ MODULES = [
         "name": "Asset Register",
         "table": "asset_register",
         "fields": [
-            T("asset_name", "Asset Name", 220),
+            AS("asset_name", "Asset Name", 220),
             C("category", "Category", ["Room Management", "Fire Alarm"], 150),
             N("qty", "Qty", 70),
             C("status", "Status", ["Active", "Under Maintenance", "Out of Service", "Retired"], 130),
@@ -584,7 +587,9 @@ def _num_or_none(raw: str):
         raise ValueError(f"'{raw}' is not a valid number.")
 
 
-def render_form_inputs(module, defaults: dict | None = None, prefix: str = "") -> dict:
+def render_form_inputs(
+    module, defaults: dict | None = None, prefix: str = "", db=None
+) -> dict:
     defaults = defaults or {}
     visible = [f for f in module["fields"] if not f.get("hidden")]
     data: dict = {}
@@ -594,25 +599,68 @@ def render_form_inputs(module, defaults: dict | None = None, prefix: str = "") -
         with cols[i % 3]:
             key = f"{prefix}f_{module['table']}_{f['col']}"
             default = defaults.get(f["col"], "") or ""
+
             if f["kind"] == "number":
-                default_str = f"{default:g}" if isinstance(default, float) else str(default or "")
+                default_str = (
+                    f"{default:g}" if isinstance(default, float) else str(default or "")
+                )
                 raw = st.text_input(f["label"], value=default_str, key=key)
                 try:
                     data[f["col"]] = _num_or_none(raw)
                 except ValueError:
                     data[f["col"]] = None
+
             elif f["kind"] == "choice":
                 opts = [""] + list(f["options"])
                 idx = opts.index(default) if default in opts else 0
                 data[f["col"]] = st.selectbox(
                     f["label"], opts, index=idx, key=key
                 ) or None
+
+            elif f["kind"] == "asset_select":
+                existing: list[str] = []
+                if db is not None:
+                    try:
+                        all_assets = db.fetch("asset_register")
+                        existing = sorted({
+                            (a.get("asset_name") or "").strip()
+                            for a in all_assets
+                            if (a.get("asset_name") or "").strip()
+                        })
+                    except Exception:
+                        existing = []
+                current = str(default or "").strip()
+                if current and current not in existing:
+                    existing = [current] + existing
+
+                NEW_OPT = "➕ Enter new name…"
+                options = [""] + existing + [NEW_OPT]
+                if current and current in options:
+                    idx = options.index(current)
+                else:
+                    idx = 0
+
+                sel = st.selectbox(
+                    f["label"], options, index=idx, key=key
+                )
+
+                if sel == NEW_OPT:
+                    new_name = st.text_input(
+                        f"{f['label']} — new name",
+                        value="",
+                        key=key + "_new",
+                    ).strip()
+                    data[f["col"]] = new_name or None
+                else:
+                    data[f["col"]] = sel or None
+
             elif f["kind"] == "date":
                 raw = st.text_input(
                     f["label"], value=str(default or ""),
                     placeholder="YYYY-MM-DD", key=key,
                 )
                 data[f["col"]] = raw.strip() or None
+
             else:
                 data[f["col"]] = st.text_input(
                     f["label"], value=str(default or ""), key=key
@@ -707,7 +755,7 @@ def render_module(module, db: Database):
     # ---------- add new ----------
     with st.expander("➕ Add new record", expanded=selected is None):
         with st.form(key=f"new_{module['table']}", clear_on_submit=True):
-            new_data = render_form_inputs(module, defaults={}, prefix="new_")
+            new_data = render_form_inputs(module, defaults={}, prefix="new_", db=db)
             submitted = st.form_submit_button("Save (Add)")
 
         if submitted:
@@ -750,7 +798,7 @@ def render_module(module, db: Database):
         defaults = _row_defaults(module, selected)
 
         with st.form(key=f"edit_{module['table']}_{selected['id']}"):
-            edited = render_form_inputs(module, defaults=defaults, prefix=f"edit_{selected['id']}_")
+            edited = render_form_inputs(module, defaults=defaults, prefix=f"edit_{selected['id']}_", db=db)
             col1, col2, _ = st.columns([1, 1, 4])
             with col1:
                 save_btn = st.form_submit_button("💾 Update")
