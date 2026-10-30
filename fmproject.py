@@ -128,7 +128,7 @@ class Database:
     def create_schema(self, modules):
         for m in modules:
             cols = ", ".join(
-                f'"{f["col"]}" {SQL_TYPE[f["kind"]]}' for f in m["fields"]
+                f'"{f["col"]}" {SQL_TYPE.get(f["kind"], "TEXT")}' for f in m["fields"]
             )
             self._execute(
                 f'CREATE TABLE IF NOT EXISTS "{m["table"]}" '
