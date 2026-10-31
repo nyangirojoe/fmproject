@@ -497,12 +497,12 @@ MODULES = [
         "name": "PPM — Preventive",
         "table": "ppm_schedule",
         "fields": [
-            T("ppm_no", "PPM No.", 110),
+            {"col": "ppm_no", "label": "PPM No.", "kind": "text", "width": 110, "table_hidden": True},
             T("asset_name", "Asset Name", 180),
             AS("contract_no", "Contract No.", "contracts", "contract_no", 120),
             AS("venue", "Venue", "asset_register", "venue", 130),
             C("frequency", "Frequency", ["Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"], 130),
-            D("planned_date", "Planned"), D("last_done", "Last Done"),
+            {"col": "planned_date", "label": "Planned", "kind": "date", "width": 110, "table_hidden": True}, D("last_done", "Last Done"),
             D("next_due", "Next Due"), T("current_ppm", "Current PPM", 140),
             C("status", "Status", ["Scheduled", "In Progress", "Completed", "Overdue", "Skipped"], 120),
             N("qty", "Qty", 70),
@@ -731,7 +731,10 @@ def _render_records_table(module, rows):
     if not rows:
         st.info("No records yet.")
         return None
-    visible = [f for f in module["fields"] if not f.get("hidden")]
+    visible = [
+        f for f in module["fields"]
+        if not f.get("hidden") and not f.get("table_hidden")
+    ]
     df = pd.DataFrame(
         [{f["label"]: r.get(f["col"]) for f in visible} | {"id": r["id"]} for r in rows]
     )
