@@ -616,6 +616,14 @@ MODULES = [
         ],
     },
     {
+        "name": "Overtime & Extra Hours",
+        "table": "overtime_claims",
+        "fields": [
+            T("description", "Description", 320),
+            N("claim", "Claim", 120),
+        ],
+    },
+    {
         "name": "BOQ — Quantities",
         "table": "boq_bill_of_quantities",
         "fields": [
