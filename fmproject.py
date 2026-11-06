@@ -620,7 +620,6 @@ MODULES = [
         "table": "overtime_claims",
         "fields": [
             T("description", "Description", 320),
-            N("claim", "Claim", 120),
         ],
     },
     {
