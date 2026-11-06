@@ -518,6 +518,19 @@ def sv_pre_delete(db, record_id, data):
 # ---------------------------------------------------------------------------
 MODULES = [
     {
+        "name": "Asset Register",
+        "table": "asset_register",
+        "fields": [
+            AS("asset_name", "Asset Name", width=220),
+            C("category", "Category", ["Room Management", "Fire Alarm"], 150),
+            N("qty", "Qty", 70),
+            C("status", "Status", ["Active", "Under Maintenance", "Out of Service", "Retired"], 130),
+            AS("contract_no", "Contract No.", "contracts", "contract_no", 120),
+            AS("venue", "Venue", "asset_register", "venue", 130),
+        ],
+    },
+    
+        {
         "name": "Contracts",
         "table": "contracts",
         "fields": [
