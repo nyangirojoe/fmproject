@@ -50,7 +50,7 @@ PPM_VENUES_BY_CONTRACT = {
     "2151": ["Expansion"],
 }
 
-PPM_FREQUENCIES = ["Q", "QY", "QHY", "HY", "Y", "QHYY", "NA"]
+PPM_FREQUENCIES = ["Q", "QY", "QHY", "HY", "Y", "QHYY", "CM Only"]
 
 PPM_MONTHS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
