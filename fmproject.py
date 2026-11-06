@@ -12,6 +12,52 @@ import pandas as pd
 import streamlit as st
 import turso_serverless
 
+# ---------------------------------------------------------------------------
+# PPM Manager — hardcoded reference data (from original Tkinter app)
+# ---------------------------------------------------------------------------
+PPM_CONTRACTS = ["1408", "1409", "0083", "2151"]
+
+PPM_ASSETS_BY_CONTRACT = {
+    "1408": [
+        "Beam detector","FACP","fire telephone","loop circuit","mimic/graphic annunciator",
+        "power supply panel","printer","workstation","remote annunciators/ repeater panels",
+        "vesda detector","fire smoke override panel",
+        "fire telephone Handset Cabinet w/ telephone handset","CAMS","FACP+mimc"
+    ],
+    "1409": [
+        "FAS Panel","Distribution Amplifier Unit","Audio Control Unit",
+        "Fire telephone control panel","FAS telephone","loop ckt",
+        "Linear heat detector panel","Terminal node panel","WS","repeater panel"
+    ],
+    "0083": [
+        "Beam det","Fire Alarm Panel","fire telephone control master panel",
+        "fire telephone distribution panel","fire telephone handsets and storage cabinet",
+        "loop circ","FAS smoke override panel","vesda det","auxilliary power supply panel"
+    ],
+    "2151": [
+        "RCU and field devices","RMS workstation, software and printers",
+        "RMS network interface and signal converters"
+    ],
+}
+
+PPM_VENUES_BY_CONTRACT = {
+    "1408": [
+        "AAE","AH-MB","AH-NE","AH-WE","AP-AB","AP-SV2B","AP-TS1","ASA","ASH","EC","ETS-1","ETS-2","ETS-3",
+        "KIS","LC","NEC","NHAC","NHQ","OD-CPG","OD-CR","OD-CR3","OD-PTZ2","OHAC","RO","SAB","SC","SCU","WH","WSH"
+    ],
+    "1409": ["Ablck","SVilla","Old Ac","Old En","CPG","Cauld","PTZone2","SClub"],
+    "0083": ["New En","AZFHQ","Tunnel"],
+    "2151": ["Expansion"],
+}
+
+PPM_FREQUENCIES = ["Q", "QY", "QHY", "HY", "Y", "QHYY", "NA"]
+
+PPM_MONTHS = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "No PPM"
+]
+
+
 APP_TITLE = "LijiArts Ltd — Facility Management"
 
 
@@ -131,6 +177,9 @@ class Database:
             # If commit fails because the stream died, reconnect and retry
             self._connect()
             self.conn.commit()
+
+    def commit(self):
+        self._commit()
 
     def create_schema(self, modules):
         for m in modules:
@@ -497,17 +546,17 @@ MODULES = [
         "name": "PPM — Preventive",
         "table": "ppm_schedule",
         "fields": [
-            {"col": "ppm_no", "label": "PPM No.", "kind": "text", "width": 110, "table_hidden": True},
+            T("ppm_no", "PPM No.", 110),
             T("asset_name", "Asset Name", 180),
             AS("contract_no", "Contract No.", "contracts", "contract_no", 120),
             AS("venue", "Venue", "asset_register", "venue", 130),
             C("frequency", "Frequency", ["Q", "Q,Y", "Q,HY,Y", "HY", "Y", "CM Only"], 130),
-            {"col": "planned_date", "label": "Planned", "kind": "date", "width": 110, "table_hidden": True}, D("last_done", "Last Done"),
+            D("planned_date", "Planned"), D("last_done", "Last Done"),
             D("next_due", "Next Due"), T("current_ppm", "Current PPM", 140),
             C("status", "Status", ["Scheduled", "In Progress", "Completed", "Overdue", "Skipped"], 120),
-            N("qty", "Qty", 70),
-            T("remarks", "Remarks", 160),
+            N("qty", "Qty", 70), T("remarks", "Remarks", 160),
         ],
+        "hidden": True,
     },
     {
         "name": "PBF — Part Borrowing",
@@ -573,6 +622,22 @@ MODULES = [
             N("amount", "Amount", 110), T("remarks", "Remarks", 160),
         ],
         "auto": auto_boq,
+        "hidden": True,
+    },
+    {
+        "name": "PPM Plan",
+        "table": "ppm_plan",
+        "fields": [
+            T("contract_no", "Contract No.", 100),
+            T("venue", "Venue", 130),
+            T("asset_name", "Asset Name", 220),
+            N("total_qty", "Total Qty", 80),
+            T("frequency", "Frequency", 80),
+            T("m1", "Month 1", 70), T("m2", "Month 2", 70),
+            T("m3", "Month 3", 70), T("m4", "Month 4", 70),
+            N("ppm_1", "PPM 1", 70), N("ppm_2", "PPM 2", 70),
+            N("ppm_3", "PPM 3", 70), N("ppm_4", "PPM 4", 70),
+        ],
         "hidden": True,
     },
 ]
@@ -1660,6 +1725,230 @@ def render_ppm_dashboard(db: Database):
 # ---------------------------------------------------------------------------
 # App shell
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# PPM Manager — single screen combining Preventive / Generator / Dashboard
+# ---------------------------------------------------------------------------
+def _render_current_month_ppms(contract: str):
+    schedule_1408 = {
+        "Jan": {"AH-MB": 39, "AH-WE": 26, "AH-NE": 16, "ASH": 58, "LC": 23, "WSH": 27, "SAB": 23, "WH": 4},
+        "Feb": {"APTS-1": 3, "AP-AB": 1, "AP-SV2B": 1, "AAE": 158, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2,
+                "NHAC": 34, "OHAC": 16, "OD-CR3": 3, "OD-CPG": 1, "OD-CR": 1, "OD-PTZ2": 1, "ASA": 1,
+                "EC": 1, "NHQ": 1, "RO": 1, "SC": 1},
+        "Mar": {"KIS": 159},
+        "Apr": {"AH-MB": 33, "AH-WE": 21, "AH-NE": 16, "ASH": 48, "LC": 16, "WSH": 28, "SAB": 15, "WH": 3},
+        "May": {"APTS-1": 4, "AAE": 203, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2, "NHAC": 31, "OHAC": 15, "OD-CR3": 8},
+        "Jun": {"KIS": 125},
+        "Jul": {"AH-MB": 39, "AH-WE": 26, "AH-NE": 16, "ASH": 58, "LC": 23, "WSH": 27, "SAB": 23, "WH": 4},
+        "Aug": {"APTS-1": 3, "AP-AB": 1, "AP-SV2B": 1, "AAE": 158, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2,
+                "NHAC": 34, "OHAC": 16, "OD-CR3": 3, "OD-CPG": 1, "OD-CR": 1, "OD-PTZ2": 1, "ASA": 1,
+                "EC": 1, "NHQ": 1, "RO": 1, "SC": 1},
+        "Sep": {"KIS": 159},
+        "Oct": {"AH-MB": 33, "AH-WE": 21, "AH-NE": 16, "ASH": 48, "LC": 16, "WSH": 28, "SAB": 15, "WH": 3},
+        "Nov": {"APTS-1": 4, "AAE": 203, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2, "NHAC": 31, "OHAC": 15, "OD-CR3": 8},
+        "Dec": {"KIS": 125},
+    }
+    s1409 = {
+        m: {"Old Ac": 37, "Ablck": 3, "Svilla": 2, "Old En": 4,
+            "Cauld": 2, "CPG": 2, "PTZone2": 2, "Sclub": 4}
+        for m in ("Jan", "Apr", "Jul", "Oct")
+    }
+    s0083 = {
+        "May": {"New En": 12, "AZFHQ": 13},
+        "Jun": {"New En": 16, "Tunnel": 3},
+        "Nov": {"New En": 12, "AZFHQ": 13},
+        "Dec": {"New En": 16, "Tunnel": 3},
+    }
+    s2151 = {
+        "Apr": {"GF": 29, "FF": 43},
+        "May": {"WS-SW-Printer": 1, "Netwk interface_signal conv": 5, "SF": 49},
+        "Jun": {"TF": 49},
+    }
+    schedules = {"1408": schedule_1408, "1409": s1409, "0083": s0083, "2151": s2151}
+
+    current_month = datetime.now().strftime("%b")
+    schedule = schedules.get(contract, {})
+    if current_month not in schedule:
+        st.info(f"No PPMs scheduled for **{contract}** in **{current_month}**.")
+        return
+    data = schedule[current_month]
+    df = pd.DataFrame(
+        [{"Venue": v, "PPM Count": c} for v, c in data.items()]
+    )
+    st.dataframe(df, hide_index=True, use_container_width=True)
+    st.caption(f"Total: **{sum(data.values())}** PPMs across **{len(data)}** venues — {current_month}")
+
+
+def render_ppm_manager(db: Database):
+    st.subheader("PPM Manager")
+    st.caption("Configure monthly PPM plan per contract / venue. Combines Preventive, Generator and Dashboard.")
+
+    if "ppm_mgr_save_ctr" not in st.session_state:
+        st.session_state.ppm_mgr_save_ctr = 0
+    ctr = st.session_state.ppm_mgr_save_ctr
+
+    # ---------- top controls ----------
+    col_a, col_b, col_c = st.columns([2, 3, 2])
+    with col_a:
+        contract = st.selectbox("Contract", PPM_CONTRACTS, key="ppm_mgr_contract")
+    with col_b:
+        venues = PPM_VENUES_BY_CONTRACT.get(contract, [])
+        venue = st.selectbox("Venue", venues, key=f"ppm_mgr_venue_{contract}")
+    with col_c:
+        st.write("")
+        if st.button("🔄 Reset Venue", key="ppm_mgr_reset_btn"):
+            st.session_state.ppm_mgr_reset_target = f"{contract}|{venue}"
+
+    # ---------- reset confirmation ----------
+    if st.session_state.get("ppm_mgr_reset_target"):
+        target = st.session_state.ppm_mgr_reset_target
+        tgt_contract, tgt_venue = target.split("|", 1)
+        st.warning(f"⚠️ Reset **all PPM data** for contract **{tgt_contract}** / venue **{tgt_venue}**?")
+        cc1, cc2, _ = st.columns([1, 1, 4])
+        with cc1:
+            if st.button("Yes, reset", key="ppm_mgr_reset_yes"):
+                db.execute(
+                    "DELETE FROM ppm_plan WHERE contract_no = ? AND venue = ?",
+                    (tgt_contract, tgt_venue),
+                )
+                db.commit()
+                st.session_state.pop("ppm_mgr_reset_target", None)
+                st.session_state.ppm_mgr_save_ctr += 1
+                st.success(f"Reset {tgt_contract} / {tgt_venue}.")
+                st.rerun()
+        with cc2:
+            if st.button("Cancel", key="ppm_mgr_reset_no"):
+                st.session_state.pop("ppm_mgr_reset_target", None)
+                st.rerun()
+
+    # ---------- load existing plan ----------
+    try:
+        venue_rows = db.execute(
+            "SELECT * FROM ppm_plan WHERE contract_no = ? AND venue = ?",
+            (contract, venue),
+        ).fetchall()
+    except Exception:
+        venue_rows = []
+
+    if venue_rows:
+        current_months = [
+            (venue_rows[0].get("m1") or "Jan"),
+            (venue_rows[0].get("m2") or "Apr"),
+            (venue_rows[0].get("m3") or "Jul"),
+            (venue_rows[0].get("m4") or "Oct"),
+        ]
+    else:
+        current_months = ["Jan", "Apr", "Jul", "Oct"]
+
+    # ---------- month selectors ----------
+    st.markdown("##### Month slots")
+    mcols = st.columns(4)
+    new_months: list[str] = []
+    for i in range(4):
+        with mcols[i]:
+            idx = PPM_MONTHS.index(current_months[i]) if current_months[i] in PPM_MONTHS else 0
+            m = st.selectbox(
+                f"Month {i + 1}",
+                PPM_MONTHS,
+                index=idx,
+                key=f"ppm_mgr_m{i}_{contract}_{venue}",
+            )
+            new_months.append(m)
+
+    # ---------- build dataframe ----------
+    assets = PPM_ASSETS_BY_CONTRACT.get(contract, [])
+    existing_by_asset = {r.get("asset_name"): r for r in venue_rows if r.get("asset_name")}
+    rows = []
+    for asset in assets:
+        ex = existing_by_asset.get(asset)
+        if ex:
+            rows.append({
+                "Asset": asset,
+                "Total Qty": int(ex.get("total_qty") or 0),
+                "Frequency": ex.get("frequency") or "Q",
+                "M1": int(ex.get("ppm_1") or 0),
+                "M2": int(ex.get("ppm_2") or 0),
+                "M3": int(ex.get("ppm_3") or 0),
+                "M4": int(ex.get("ppm_4") or 0),
+            })
+        else:
+            rows.append({
+                "Asset": asset,
+                "Total Qty": 0,
+                "Frequency": "Q",
+                "M1": 0, "M2": 0, "M3": 0, "M4": 0,
+            })
+    df = pd.DataFrame(rows)
+
+    # ---------- column config ----------
+    col_config = {
+        "Asset": st.column_config.TextColumn("Asset", disabled=True, width="large"),
+        "Total Qty": st.column_config.NumberColumn("Total Qty", min_value=0, step=1, width="small"),
+        "Frequency": st.column_config.SelectboxColumn("Frequency", options=PPM_FREQUENCIES, width="small"),
+    }
+    for i, m in enumerate(new_months):
+        col_config[f"M{i+1}"] = st.column_config.NumberColumn(
+            f"M{i+1} ({m})",
+            min_value=0,
+            step=1,
+            width="small",
+            disabled=(m == "No PPM"),
+        )
+
+    # ---------- form: editor + save ----------
+    with st.form(f"ppm_mgr_form_{ctr}"):
+        edited = st.data_editor(
+            df,
+            column_config=col_config,
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key=f"ppm_editor_{contract}_{venue}_{ctr}",
+        )
+        submitted = st.form_submit_button("💾 Save PPM Plan", type="primary")
+
+    if submitted:
+        try:
+            db.execute(
+                "DELETE FROM ppm_plan WHERE contract_no = ? AND venue = ?",
+                (contract, venue),
+            )
+            db.commit()
+            for _, row in edited.iterrows():
+                db.insert("ppm_plan", {
+                    "contract_no": contract,
+                    "venue": venue,
+                    "asset_name": row["Asset"],
+                    "total_qty": int(row["Total Qty"]) if pd.notna(row["Total Qty"]) else 0,
+                    "frequency": row["Frequency"],
+                    "m1": new_months[0], "m2": new_months[1],
+                    "m3": new_months[2], "m4": new_months[3],
+                    "ppm_1": 0 if new_months[0] == "No PPM" else int(row["M1"] or 0),
+                    "ppm_2": 0 if new_months[1] == "No PPM" else int(row["M2"] or 0),
+                    "ppm_3": 0 if new_months[2] == "No PPM" else int(row["M3"] or 0),
+                    "ppm_4": 0 if new_months[3] == "No PPM" else int(row["M4"] or 0),
+                })
+            st.session_state.ppm_mgr_save_ctr += 1
+            st.success(f"Saved {len(edited)} asset rows for {contract} / {venue}.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Save failed: {exc}")
+
+    # ---------- sum per month ----------
+    st.markdown("##### Sum per month")
+    sum_cols = st.columns(4)
+    for i, m in enumerate(new_months):
+        with sum_cols[i]:
+            if m == "No PPM":
+                st.metric(f"M{i+1} ({m})", "—")
+            else:
+                total = int(edited[f"M{i+1}"].sum()) if f"M{i+1}" in edited.columns else 0
+                st.metric(f"M{i+1} ({m})", total)
+
+    # ---------- current month summary ----------
+    st.divider()
+    with st.expander(f"📅 Current Month PPMs — {contract}", expanded=False):
+        _render_current_month_ppms(contract)
+
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
 
@@ -1686,10 +1975,8 @@ def main():
         st.caption("Facility Management — DB: Turso (persistent)")
 
     tab_labels = [m["name"] for m in MODULES if not m.get("hidden")]
-    ppm_label = next(m["name"] for m in MODULES if m["table"] == "ppm_schedule")
-    ppm_pos = tab_labels.index(ppm_label)
-    tab_labels.insert(ppm_pos + 1, "PPM Generator")
-    tab_labels.insert(ppm_pos + 2, "PPM Dashboard")
+    asset_idx = tab_labels.index("Asset Register")
+    tab_labels.insert(asset_idx + 1, "PPM Manager")
 
     with st.sidebar:
         st.header("Modules")
@@ -1699,12 +1986,8 @@ def main():
             label_visibility="collapsed",
         )
 
-    if selected_tab == "Stock Balance":
-        render_stock_balance(db)
-    elif selected_tab == "PPM Generator":
-        render_ppm_generator(db)
-    elif selected_tab == "PPM Dashboard":
-        render_ppm_dashboard(db)
+    if selected_tab == "PPM Manager":
+        render_ppm_manager(db)
     else:
         module = next(m for m in MODULES if m["name"] == selected_tab)
         render_module(module, db)
