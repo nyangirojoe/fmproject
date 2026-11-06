@@ -1978,8 +1978,7 @@ def main():
         st.caption("Facility Management — DB: Turso (persistent)")
 
     tab_labels = [m["name"] for m in MODULES if not m.get("hidden")]
-    asset_idx = tab_labels.index("Asset Register")
-    tab_labels.insert(asset_idx + 1, "PPM Manager")
+    tab_labels.insert(0, "PPM Manager")
 
     with st.sidebar:
         st.header("Modules")
