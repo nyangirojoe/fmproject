@@ -530,7 +530,7 @@ MODULES = [
             T("remarks", "Remarks", 200),
         ],
         "hidden": True,
-    },,
+    },
     
         {
         "name": "Contracts",
