@@ -527,8 +527,10 @@ MODULES = [
             C("status", "Status", ["Active", "Under Maintenance", "Out of Service", "Retired"], 130),
             AS("contract_no", "Contract No.", "contracts", "contract_no", 120),
             AS("venue", "Venue", "asset_register", "venue", 130),
+            T("remarks", "Remarks", 200),
         ],
-    },
+        "hidden": True,
+    },,
     
         {
         "name": "Contracts",
