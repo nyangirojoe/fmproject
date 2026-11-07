@@ -1841,30 +1841,32 @@ def _seed_ppm_plan_if_empty(db: Database):
         assets = PPM_ASSETS_BY_CONTRACT.get(contract, [])
         venues = PPM_VENUES_BY_CONTRACT.get(contract, [])
 
-        if contract == "1409":
-            months_for_venue = ["Jan", "Apr", "Jul", "Oct"]
-        elif contract == "0083":
-            months_for_venue = ["May", "Jun", "Nov", "Dec"]
-        elif contract == "2151":
-            months_for_venue = ["Apr", "May", "Jun", "No PPM"]
-        else:
-            months_for_venue = ["Jan", "Apr", "Jul", "Oct"]
-
         for venue in venues:
-            asset_totals = {a: [0, 0, 0, 0] for a in assets}
+            asset_totals = {a: {} for a in assets}
 
-            # Evenly split the venue-level monthly total across all assets
-            for slot_idx, month in enumerate(months_for_venue):
-                if month == "No PPM":
-                    continue
-                venue_total = schedule.get(month, {}).get(venue, 0)
+            # Distribute the venue total across all assets for each month present in the schedule
+            for month, venue_data in schedule.items():
+                venue_total = venue_data.get(venue, 0)
                 if venue_total and assets:
                     per_asset = venue_total // len(assets)
                     remainder = venue_total - per_asset * len(assets)
                     for i, a in enumerate(assets):
-                        asset_totals[a][slot_idx] = per_asset + (1 if i < remainder else 0)
+                        asset_totals[a][month] = per_asset + (1 if i < remainder else 0)
 
             for asset in assets:
+                m_totals = asset_totals[asset]
+                
+                # Determine the 4 month slots based on what actually has data, up to 4
+                # If the asset has data in Jan, Apr, Jul, Oct, those become the slots.
+                # If it only has data in Feb and May, those become M1 and M2.
+                active_months = list(m_totals.keys())
+                slots = ["No PPM"] * 4
+                vals = [0] * 4
+                
+                for i, m in enumerate(active_months[:4]):
+                    slots[i] = m
+                    vals[i] = m_totals[m]
+
                 try:
                     db.insert("ppm_plan", {
                         "contract_no": contract,
@@ -1872,14 +1874,10 @@ def _seed_ppm_plan_if_empty(db: Database):
                         "asset_name": asset,
                         "total_qty": 0,
                         "frequency": "Q",
-                        "m1": months_for_venue[0],
-                        "m2": months_for_venue[1],
-                        "m3": months_for_venue[2],
-                        "m4": months_for_venue[3],
-                        "ppm_1": asset_totals[asset][0],
-                        "ppm_2": asset_totals[asset][1],
-                        "ppm_3": asset_totals[asset][2],
-                        "ppm_4": asset_totals[asset][3],
+                        "m1": slots[0], "m2": slots[1],
+                        "m3": slots[2], "m4": slots[3],
+                        "ppm_1": vals[0], "ppm_2": vals[1],
+                        "ppm_3": vals[2], "ppm_4": vals[3],
                     })
                 except Exception:
                     pass
