@@ -1787,14 +1787,112 @@ def _render_current_month_ppms(contract: str):
     st.dataframe(df, hide_index=True, use_container_width=True)
     st.caption(f"Total: **{sum(data.values())}** PPMs across **{len(data)}** venues — {current_month}")
 
+def _seed_ppm_plan_if_empty(db: Database):
+    """On first run, pre-populate ppm_plan from the hardcoded schedules."""
+    try:
+        existing = db.execute("SELECT COUNT(*) AS c FROM ppm_plan").fetchone()
+        if existing and existing.get("c", 0) > 0:
+            return
+    except Exception:
+        return
+
+    schedule_1408 = {
+        "Jan": {"AH-MB": 39, "AH-WE": 26, "AH-NE": 16, "ASH": 58, "LC": 23, "WSH": 27, "SAB": 23, "WH": 4},
+        "Feb": {"APTS-1": 3, "AP-AB": 1, "AP-SV2B": 1, "AAE": 158, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2,
+                "NHAC": 34, "OHAC": 16, "OD-CR3": 3, "OD-CPG": 1, "OD-CR": 1, "OD-PTZ2": 1, "ASA": 1,
+                "EC": 1, "NHQ": 1, "RO": 1, "SC": 1},
+        "Mar": {"KIS": 159},
+        "Apr": {"AH-MB": 33, "AH-WE": 21, "AH-NE": 16, "ASH": 48, "LC": 16, "WSH": 28, "SAB": 15, "WH": 3},
+        "May": {"APTS-1": 4, "AAE": 203, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2, "NHAC": 31, "OHAC": 15, "OD-CR3": 8},
+        "Jun": {"KIS": 125},
+        "Jul": {"AH-MB": 39, "AH-WE": 26, "AH-NE": 16, "ASH": 58, "LC": 23, "WSH": 27, "SAB": 23, "WH": 4},
+        "Aug": {"APTS-1": 3, "AP-AB": 1, "AP-SV2B": 1, "AAE": 158, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2,
+                "NHAC": 34, "OHAC": 16, "OD-CR3": 3, "OD-CPG": 1, "OD-CR": 1, "OD-PTZ2": 1, "ASA": 1,
+                "EC": 1, "NHQ": 1, "RO": 1, "SC": 1},
+        "Sep": {"KIS": 159},
+        "Oct": {"AH-MB": 33, "AH-WE": 21, "AH-NE": 16, "ASH": 48, "LC": 16, "WSH": 28, "SAB": 15, "WH": 3},
+        "Nov": {"APTS-1": 4, "AAE": 203, "ETS-1": 2, "ETS-2": 2, "ETS-3": 2, "NHAC": 31, "OHAC": 15, "OD-CR3": 8},
+        "Dec": {"KIS": 125},
+    }
+    schedule_1409 = {
+        m: {"Old Ac": 37, "Ablck": 3, "Svilla": 2, "Old En": 4,
+            "Cauld": 2, "CPG": 2, "PTZone2": 2, "Sclub": 4}
+        for m in ("Jan", "Apr", "Jul", "Oct")
+    }
+    schedule_0083 = {
+        "May": {"New En": 12, "AZFHQ": 13},
+        "Jun": {"New En": 16, "Tunnel": 3},
+        "Nov": {"New En": 12, "AZFHQ": 13},
+        "Dec": {"New En": 16, "Tunnel": 3},
+    }
+    schedule_2151 = {
+        "Apr": {"GF": 29, "FF": 43},
+        "May": {"WS-SW-Printer": 1, "Netwk interface_signal conv": 5, "SF": 49},
+        "Jun": {"TF": 49},
+    }
+    all_schedules = {
+        "1408": schedule_1408,
+        "1409": schedule_1409,
+        "0083": schedule_0083,
+        "2151": schedule_2151,
+    }
+
+    for contract, schedule in all_schedules.items():
+        assets = PPM_ASSETS_BY_CONTRACT.get(contract, [])
+        venues = PPM_VENUES_BY_CONTRACT.get(contract, [])
+
+        if contract == "1409":
+            months_for_venue = ["Jan", "Apr", "Jul", "Oct"]
+        elif contract == "0083":
+            months_for_venue = ["May", "Jun", "Nov", "Dec"]
+        elif contract == "2151":
+            months_for_venue = ["Apr", "May", "Jun", "No PPM"]
+        else:
+            months_for_venue = ["Jan", "Apr", "Jul", "Oct"]
+
+        for venue in venues:
+            asset_totals = {a: [0, 0, 0, 0] for a in assets}
+
+            # Evenly split the venue-level monthly total across all assets
+            for slot_idx, month in enumerate(months_for_venue):
+                if month == "No PPM":
+                    continue
+                venue_total = schedule.get(month, {}).get(venue, 0)
+                if venue_total and assets:
+                    per_asset = venue_total // len(assets)
+                    remainder = venue_total - per_asset * len(assets)
+                    for i, a in enumerate(assets):
+                        asset_totals[a][slot_idx] = per_asset + (1 if i < remainder else 0)
+
+            for asset in assets:
+                try:
+                    db.insert("ppm_plan", {
+                        "contract_no": contract,
+                        "venue": venue,
+                        "asset_name": asset,
+                        "total_qty": 0,
+                        "frequency": "Q",
+                        "m1": months_for_venue[0],
+                        "m2": months_for_venue[1],
+                        "m3": months_for_venue[2],
+                        "m4": months_for_venue[3],
+                        "ppm_1": asset_totals[asset][0],
+                        "ppm_2": asset_totals[asset][1],
+                        "ppm_3": asset_totals[asset][2],
+                        "ppm_4": asset_totals[asset][3],
+                    })
+                except Exception:
+                    pass
 
 def render_ppm_manager(db: Database):
     st.subheader("PPM Manager")
     st.caption("Configure monthly PPM plan per contract / venue. Combines Preventive, Generator and Dashboard.")
 
-    if "ppm_mgr_save_ctr" not in st.session_state:
+     if "ppm_mgr_save_ctr" not in st.session_state:
         st.session_state.ppm_mgr_save_ctr = 0
     ctr = st.session_state.ppm_mgr_save_ctr
+
+    _seed_ppm_plan_if_empty(db)
 
     # ---------- top controls ----------
     col_a, col_b, col_c = st.columns([2, 3, 2])
