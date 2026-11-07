@@ -1888,7 +1888,7 @@ def render_ppm_manager(db: Database):
     st.subheader("PPM Manager")
     st.caption("Configure monthly PPM plan per contract / venue. Combines Preventive, Generator and Dashboard.")
 
-     if "ppm_mgr_save_ctr" not in st.session_state:
+    if "ppm_mgr_save_ctr" not in st.session_state:
         st.session_state.ppm_mgr_save_ctr = 0
     ctr = st.session_state.ppm_mgr_save_ctr
 
