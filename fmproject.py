@@ -2020,18 +2020,24 @@ def render_ppm_manager(db: Database):
             )
             db.commit()
             for _, row in edited.iterrows():
+                # Helper to safely convert NaN/None to integer
+                def safe_int(val):
+                    if pd.isna(val) or val is None or val == "":
+                        return 0
+                    return int(val)
+
                 db.insert("ppm_plan", {
                     "contract_no": contract,
                     "venue": venue,
                     "asset_name": row["Asset"],
-                    "total_qty": int(row["Total Qty"]) if pd.notna(row["Total Qty"]) else 0,
-                    "frequency": row["Frequency"],
+                    "total_qty": safe_int(row.get("Total Qty")),
+                    "frequency": row.get("Frequency") or "Q",
                     "m1": new_months[0], "m2": new_months[1],
                     "m3": new_months[2], "m4": new_months[3],
-                    "ppm_1": 0 if new_months[0] == "No PPM" else int(row["M1"] or 0),
-                    "ppm_2": 0 if new_months[1] == "No PPM" else int(row["M2"] or 0),
-                    "ppm_3": 0 if new_months[2] == "No PPM" else int(row["M3"] or 0),
-                    "ppm_4": 0 if new_months[3] == "No PPM" else int(row["M4"] or 0),
+                    "ppm_1": 0 if new_months[0] == "No PPM" else safe_int(row.get("M1")),
+                    "ppm_2": 0 if new_months[1] == "No PPM" else safe_int(row.get("M2")),
+                    "ppm_3": 0 if new_months[2] == "No PPM" else safe_int(row.get("M3")),
+                    "ppm_4": 0 if new_months[3] == "No PPM" else safe_int(row.get("M4")),
                 })
             st.session_state.ppm_mgr_save_ctr += 1
             st.success(f"Saved {len(edited)} asset rows for {contract} / {venue}.")
