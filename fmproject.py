@@ -22,7 +22,7 @@ PPM_ASSETS_BY_CONTRACT = {
         "Beam detector","FACP","fire telephone","loop circuit","mimic/graphic annunciator",
         "power supply panel","printer","workstation","remote annunciators/ repeater panels",
         "vesda detector","fire smoke override panel",
-        "fire telephone Handset Cabinet w/ telephone handset","CAMS","FACP+mimc"
+        "fire telephone Handset Cabinet w/ telephone handset","CAMS"
     ],
     "1409": [
         "FAS Panel","Distribution Amplifier Unit","Audio Control Unit",
@@ -50,7 +50,7 @@ PPM_VENUES_BY_CONTRACT = {
     "2151": ["Expansion"],
 }
 
-PPM_FREQUENCIES = ["Q", "QY", "QHY", "HY", "Y", "QHYY", "CM Only"]
+PPM_FREQUENCIES = ["N/A","Q", "QY", "QHY", "HY", "Y", "QHYY", "CM Only"]
 
 PPM_MONTHS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
